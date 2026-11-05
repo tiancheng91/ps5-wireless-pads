@@ -13,7 +13,7 @@ HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -O1 -g -Isrc -D_DEFAULT_SOURCE
 
 BUILD := build
 
-.PHONY: all test fuzz demo ps5 send clean
+.PHONY: all test test-usb-poll fuzz demo ps5 send clean
 
 all: test
 
@@ -79,7 +79,11 @@ $(BUILD)/test_i18n: src/i18n.c tests/test_i18n.c | $(BUILD)
 $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
-test: $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_web $(BUILD)/test_launcher $(BUILD)/test_i18n $(BUILD)/test_suspend
+# Exercise the console pump on the host without its platform USB headers.
+test-usb-poll:
+	python3 tests/test_usb_poll.py
+
+test: test-usb-poll $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_web $(BUILD)/test_launcher $(BUILD)/test_i18n $(BUILD)/test_suspend
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config

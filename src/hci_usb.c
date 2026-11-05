@@ -305,8 +305,9 @@ static int op_pump(void *ctx, int timeout_ms)
         keep_reads_pending(c);
         any = reap(c);
         if (c->events.count || c->acl.count) return 1;
-        if (any) continue;
+        /* Empty or failed completions must not keep us past the deadline. */
         if (now_ms() >= deadline) return 0;
+        if (any) continue;
         usleep(1000);
     }
 }

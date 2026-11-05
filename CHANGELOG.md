@@ -5,6 +5,10 @@ version is set in `src/version.h` and is also in the first line of the log, in
 the start-up notification, on the web page, and in the binary
 (`strings PadBridge-PS5-*.elf | grep padbridge-version`).
 
+## Unreleased
+
+- USB polling: check the deadline even when transfers keep completing without a full HCI packet, so empty or failed reads cannot indefinitely block the main loop. Normal packet delivery and connection handling are unchanged. Added a host regression test (`make test-usb-poll`, requires Python 3).
+
 ## 0.2.0-beta
 
 First release of the ps5-wireless-pads fork (based on PadBridge PS5 0.1.9-beta). Not yet tested on a console.
