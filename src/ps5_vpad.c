@@ -113,6 +113,8 @@ typedef struct {
     long feedback_at;
     int feedback_failed;
     int feedback_seen;
+    unsigned char diag_input;
+    uint32_t diag_buttons;
 } vslot;
 
 static mbus_bind_fn g_bind;
@@ -624,9 +626,17 @@ static void send_frame(int slot, const pad_state *st)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     d.timestamp = (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
 
-    if (scePadVirtualDeviceInsertData(g_slot[slot].handle, &d) != 0) {
+    int32_t result = scePadVirtualDeviceInsertData(g_slot[slot].handle, &d);
+    if (g_slot[slot].diag_input < 6 &&
+        (!g_slot[slot].diag_input || g_slot[slot].diag_buttons != d.buttons)) {
+        g_slot[slot].diag_input++;
+        g_slot[slot].diag_buttons = d.buttons;
+        log_line("slot %d: virtual input handle=%#x buttons=%08x result=%#x",
+                 slot, (unsigned)g_slot[slot].handle, (unsigned)d.buttons, (unsigned)result);
+    }
+    if (result != 0) {
         /* Stop feeding a device that refuses: it may not be ours any more. */
-        log_line("slot %d: the virtual pad refused input, stopped feeding it", slot);
+        log_line("slot %d: the virtual pad refused input result=%#x, stopped feeding it", slot, (unsigned)result);
         g_slot[slot].st = VP_FAILED;
     }
 }

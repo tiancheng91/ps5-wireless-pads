@@ -1173,11 +1173,20 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x05:  /* Disconnection Complete: status, handle, reason */
         if (len < 6 || !(l = link_by_handle(h, le16(ev + 3)))) break;
         log_line("pad %s: disconnected (reason %#04x)", addr_str(l->addr), ev[5]);
+        if (!l->le && !l->ready)
+            log_line("pad %s: setup ended handle=%#x auth_sent=%d auth_ok=%d enc_sent=%d enc_on=%d age_ms=%ld",
+                     addr_str(l->addr), l->handle, l->auth_sent, l->auth_ok,
+                     l->enc_sent, l->enc_on, now_ms() - l->t_conn);
         link_free(h, l);
         break;
 
     case 0x06:  /* Authentication Complete: status, handle */
         if (len < 5 || !(l = link_by_handle(h, le16(ev + 3)))) break;
+        if (l->diag_security < 20) {
+            l->diag_security++;
+            log_line("pad %s: authentication complete handle=%#x status=%#04x",
+                     addr_str(l->addr), l->handle, ev[2]);
+        }
         if (ev[2] == 0) {
             l->auth_ok = 1;
             l->t_auth_ok = now_ms();
@@ -1193,6 +1202,11 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         if (l->le) {
             le_on_encryption(h, l, ev[2], ev[5]);
             break;
+        }
+        if (l->diag_security < 20) {
+            l->diag_security++;
+            log_line("pad %s: encryption change handle=%#x status=%#04x enabled=%u",
+                     addr_str(l->addr), l->handle, ev[2], ev[5]);
         }
         if (ev[2] == 0 && ev[5]) {
             l->enc_on = 1;
@@ -1214,10 +1228,24 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         h->cc_op = le16(ev + 3);
         h->cc_len = len < (int)sizeof h->cc ? len : (int)sizeof h->cc;
         memcpy(h->cc, ev, (size_t)h->cc_len);
+        if ((h->cc_op == OP_LINK_KEY_REPLY || h->cc_op == OP_LINK_KEY_NEG_REPLY ||
+             h->cc_op == OP_ACCEPT_CONNECTION) && h->diag_security_commands < 40) {
+            h->diag_security_commands++;
+            log_line("security command complete: opcode=%#06x status=%#04x", h->cc_op, ev[5]);
+        }
         le_on_cmd_complete(h, h->cc_op, ev[5]);
         break;
 
     case 0x0F:  /* Command Status: status, credits, opcode */
+        /* Command Status carries no connection handle: do not attribute it to a pad. */
+        if (len >= 6 && (le16(ev + 4) == OP_AUTH_REQUESTED ||
+                        le16(ev + 4) == OP_SET_ENCRYPTION ||
+                        le16(ev + 4) == OP_ACCEPT_CONNECTION) &&
+            h->diag_security_commands < 40) {
+            h->diag_security_commands++;
+            log_line("security command status: opcode=%#06x status=%#04x credits=%u",
+                     le16(ev + 4), ev[2], ev[3]);
+        }
         if (len >= 6 && le16(ev + 4) == OP_INQUIRY) {
             log_line("inquiry: controller answered status %#04x", ev[2]);
             if (ev[2] != 0) {
@@ -1273,12 +1301,26 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         if (len < 8 || !link_by_addr(h, ev + 2)) break;
         {
             db_rec *r = db_find(h, ev + 2, 0);
+            l = link_by_addr(h, ev + 2);
+            if (l->diag_security < 20) {
+                l->diag_security++;
+                log_line("pad %s: link key requested stored=%d key_type=%u",
+                         addr_str(l->addr), r != NULL, r ? r->type : 0);
+            }
             if (r) {
                 memcpy(p, ev + 2, 6);
                 memcpy(p + 6, r->key, 16);
-                send_cmd(h, OP_LINK_KEY_REPLY, p, 22);
+                int sent = send_cmd(h, OP_LINK_KEY_REPLY, p, 22);
+                if (l->diag_security < 20) {
+                    l->diag_security++;
+                    log_line("pad %s: link key reply sent=%d", addr_str(l->addr), sent);
+                }
             } else {
-                send_cmd(h, OP_LINK_KEY_NEG_REPLY, ev + 2, 6);
+                int sent = send_cmd(h, OP_LINK_KEY_NEG_REPLY, ev + 2, 6);
+                if (l->diag_security < 20) {
+                    l->diag_security++;
+                    log_line("pad %s: negative link key reply sent=%d", addr_str(l->addr), sent);
+                }
             }
         }
         break;
@@ -1332,6 +1374,9 @@ static void link_step(host_t *h, link_t *l, long now)
     }
     if (l->disconnecting) return;
     if (!l->ready && now - l->t_conn > T_SETUP_TIMEOUT) {
+        log_line("pad %s: setup timeout handle=%#x auth_sent=%d auth_ok=%d enc_sent=%d enc_on=%d ids=%d sdp=%d ctrl=%d intr=%d",
+                 addr_str(l->addr), l->handle, l->auth_sent, l->auth_ok,
+                 l->enc_sent, l->enc_on, l->ids_known, l->sdp_query, l->ctrl.st, l->intr.st);
         link_disconnect(h, l, "setup did not finish");
         return;
     }
@@ -1340,7 +1385,12 @@ static void link_step(host_t *h, link_t *l, long now)
     if (!l->auth_ok) {
         if (!l->auth_sent && now - l->t_conn >= (l->pairing ? 0 : T_SELF_AUTH)) {
             put16(p, l->handle);
-            send_cmd(h, OP_AUTH_REQUESTED, p, 2);
+            int sent = send_cmd(h, OP_AUTH_REQUESTED, p, 2);
+            if (l->diag_security < 20) {
+                l->diag_security++;
+                log_line("pad %s: authentication requested handle=%#x sent=%d pairing=%d",
+                         addr_str(l->addr), l->handle, sent, l->pairing);
+            }
             l->auth_sent = 1;
         }
         return;
@@ -1349,7 +1399,12 @@ static void link_step(host_t *h, link_t *l, long now)
         if (!l->enc_sent && now - l->t_auth_ok >= (l->pairing ? 0 : T_SELF_ENCRYPT)) {
             put16(p, l->handle);
             p[2] = 1;
-            send_cmd(h, OP_SET_ENCRYPTION, p, 3);
+            int sent = send_cmd(h, OP_SET_ENCRYPTION, p, 3);
+            if (l->diag_security < 20) {
+                l->diag_security++;
+                log_line("pad %s: encryption requested handle=%#x sent=%d",
+                         addr_str(l->addr), l->handle, sent);
+            }
             l->enc_sent = 1;
         }
         return;

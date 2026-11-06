@@ -186,6 +186,7 @@ typedef struct {
     long t_create, t_conn;
 
     int auth_sent, auth_ok, enc_sent, enc_on;
+    unsigned char diag_security;
     long t_auth_ok, t_secure;
 
     int ids_known;
@@ -269,6 +270,7 @@ struct host {
     long pair_until, inquiry_retry_at;
     long purge_at;                  /* when stale links were last cleared */
     int inquiring;
+    unsigned char diag_security_commands;
     int dead;               /* the transport is gone */
     int diag_done;          /* the transport's self-report was logged */
     int scan_orig, scan_set; /* page scan as found, and as we set it (-1: untouched) */
