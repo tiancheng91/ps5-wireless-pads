@@ -41,6 +41,16 @@ static const unsigned char *link_identity(const link_t *l)
     return l->addr;
 }
 
+int classic_setup_pending(const host_t *h)
+{
+    int i;
+    for (i = 0; i < HOST_MAX_PADS; i++) {
+        const link_t *l = &h->links[i];
+        if (l->used && !l->le && !l->ready && !l->disconnecting) return 1;
+    }
+    return 0;
+}
+
 link_t *link_by_addr(host_t *h, const unsigned char *a)
 {
     int i;

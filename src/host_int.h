@@ -219,7 +219,7 @@ typedef struct {
     long t_init;
     uint64_t diag_rx, diag_parsed;
     uint64_t diag_acl, diag_frames;
-    unsigned char diag_acl_errors, diag_unknown_cid;
+    unsigned char diag_acl_errors, diag_unknown_cid, diag_le_output_errors;
     uint32_t diag_buttons;
     unsigned char diag_changes, diag_hid_ignored, diag_init_failures;
 
@@ -281,6 +281,7 @@ const char *addr_str(const unsigned char *a);
 int  send_cmd(host_t *h, unsigned op, const void *p, int len);
 int  hci_sync(host_t *h, unsigned op, const void *p, int plen);
 int  slot_of(host_t *h, const link_t *l);
+int  classic_setup_pending(const host_t *h);
 link_t *link_by_addr(host_t *h, const unsigned char *a);
 link_t *link_new(host_t *h, const unsigned char *addr);
 void link_free(host_t *h, link_t *l);

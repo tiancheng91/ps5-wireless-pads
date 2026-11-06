@@ -706,7 +706,12 @@ static void test_identity_publication(void)
     CHECK(!s.connects && !host_pad_get(&h, 0, &info, &state));
     good = link_new(&h, identity);
     good->connected = 1; good->prof = bad->prof;
+    CHECK(classic_setup_pending(&h));
+    good->disconnecting = 1;
+    CHECK(!classic_setup_pending(&h));
+    good->disconnecting = 0;
     link_ready(&h, good);
+    CHECK(!classic_setup_pending(&h));
     CHECK(!s.connects);
     link_input(&h, good, report, sizeof report);
     CHECK(s.connects == 1 && s.states == 1 && bad->disconnecting);

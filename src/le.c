@@ -520,6 +520,7 @@ static void on_advert(host_t *h, const uint8_t *r, int n)
     db_rec *bond;
     int i;
 
+    if (classic_setup_pending(h)) return; /* Do not race Classic pairing with an LE alias. */
     if (n < 10) return;
     evtype = r[0];
     type = r[1];
@@ -560,6 +561,8 @@ void le_poll(host_t *h, long now)
     }
     for (i = 0; i < HOST_MAX_PADS; i++)
         if (h->links[i].used && h->links[i].le && !h->links[i].connected) want = 0;
+
+    if (classic_setup_pending(h)) want = 0;
 
     /* Sent again now and then: its reply may have gone astray. */
     if (want != h->le_scanning || (want && now - h->t_scan > T_SCAN_REFRESH)) {
@@ -1314,7 +1317,13 @@ int le_send_report(host_t *h, link_t *l, const unsigned char *rep, int len)
     uint8_t q[80];
     int i;
 
-    if (len < 1 || len - 1 > (int)sizeof q - 3 || len - 1 > e->mtu - 3) return 0;
+    if (len < 1 || len - 1 > (int)sizeof q - 3 || len - 1 > e->mtu - 3) {
+        if (l->diag_le_output_errors < 3) {
+            l->diag_le_output_errors++;
+            log_line("le pad %s: output rejected: len=%d mtu=%u", addr_str(l->addr), len, e->mtu);
+        }
+        return 0;
+    }
     for (i = 0; i < e->nch; i++) {
         const gatt_char *c = &e->ch[i];
         if (c->uuid != UUID_REPORT || c->rtype != 2 || c->rid != rep[0]) continue;
@@ -1322,6 +1331,11 @@ int le_send_report(host_t *h, link_t *l, const unsigned char *rep, int len)
         put16(q + 1, c->value);
         memcpy(q + 3, rep + 1, (size_t)(len - 1));
         return l2_send(h, l, CID_ATT, q, len + 2);
+    }
+    if (l->diag_le_output_errors < 3) {
+        l->diag_le_output_errors++;
+        log_line("le pad %s: no output characteristic for report=%02x (characteristics=%d)",
+                 addr_str(l->addr), rep[0], e->nch);
     }
     return 0;
 }
