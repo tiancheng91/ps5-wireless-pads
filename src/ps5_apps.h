@@ -3,8 +3,12 @@
 #ifndef PADBRIDGE_PS5_APPS_H
 #define PADBRIDGE_PS5_APPS_H
 
-/* Writes the files if needed and, when they changed or the system does not
- * know the entry yet, asks the system to install it. 0 on success. */
+#ifndef APPS_LAUNCHER_STAMP
+#define APPS_LAUNCHER_STAMP "/data/padbridge/launcher-installed"
+#endif
+
+/* Writes the files if needed and asks the system to register the entry.
+ * 0 on success, -1 on failure. */
 int apps_install_launcher(void);
 
 /* Asks the system to remove the entry and deletes the files. 0 on success. */

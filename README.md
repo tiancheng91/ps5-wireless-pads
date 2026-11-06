@@ -114,7 +114,15 @@ The payload has no firmware-specific offsets of its own; the kernel offsets come
    ```
 
 3. The console shows a notification with the menu address: **`http://<ps5-ip>:8095/`**. A **PadBridge**
-   entry also appears in the media row (home icon).
+   entry is registered in the media row when the firmware's installer is available.
+
+Icon registration follows Payload Manager: resolve the public `AppInstallTitleDir`
+by NID, or fall back to the public `AppInstallAll` scan when unavailable. It adds a
+web shortcut without installing ShellCore hooks or requiring a firmware offset table.
+The fallback may also register other staged application directories. A local success
+marker avoids repeating the scan on every startup; failed attempts are retried even
+when the icon files already exist. Check `http://<ps5-ip>:8095/api/log` for `launcher:`
+messages. Console verification is still required.
 
 The jailbreak is not persistent: after a full **reboot** you must run the exploit and send the ELF again.
 Rest mode does not require it (see [What's new](#whats-new-in-this-fork)).

@@ -30,7 +30,7 @@ CC=$PS5_PAYLOAD_SDK/bin/prospero-clang
 cd /work
 rm -rf build/elf && mkdir -p build/elf
 OBJS=""
-for f in util log crc32 smp_crypto profiles generic host le web web_page config evstream hotkey lock netinfo usb_desc hci_usb ps5_power ps5_ui ps5_apps ps5_sysinfo launcher icon_data ps5_vpad ps5_main; do
+for f in util log crc32 smp_crypto profiles generic host le web web_page i18n config evstream hotkey lock instance netinfo usb_desc suspend hci_usb ps5_power ps5_ui ps5_apps ps5_launcher ps5_sysinfo launcher icon_data ps5_vpad ps5_main; do
   $CC -std=c11 -Wall -Wextra -Werror -O2 -Isrc -c src/$f.c -o build/elf/$f.o
   OBJS="$OBJS build/elf/$f.o"
 done

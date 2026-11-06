@@ -7,6 +7,7 @@ the start-up notification, on the web page, and in the binary
 
 ## Unreleased
 
+- Launcher: follow Payload Manager's public installer path (TitleDir NID lookup with AppInstallAll fallback), retry failed registrations, and record success to avoid repeated scans. No ShellCore hooks or firmware offsets. Added regression tests and GitHub Actions payload builds. Console verification is pending.
 - Switch Pro (`057e:2009`): implement the web rumble test using 0x10 reports, fixed 160/320 Hz bands and separate left/right strengths. Output is queued after initialization, paced at 60 ms, and stops with at most five attempts. Other Switch models retain input-only support. Host-tested only, not verified on a console.
 - Classic game rumble: optionally resolve `scePadVirtualDeviceGetRemoteSetting`, sample our live virtual devices at 16 ms intervals, and forward motor values through existing profiles. Feedback expires after 500 ms without a successful sample; a failed read disables only feedback until reconnection. Web test pulses take priority. Xbox game output uses short device-side pulses refreshed periodically. PS5 haptic audio/adaptive triggers are not implemented; console verification is still required.
 - USB polling: check the deadline even when transfers keep completing without a full HCI packet, so empty or failed reads cannot indefinitely block the main loop. Normal packet delivery and connection handling are unchanged. Added a host regression test (`make test-usb-poll`, requires Python 3).

@@ -71,6 +71,9 @@ src/icon_data.c: assets/icon0.png
 $(BUILD)/test_launcher: src/launcher.c src/icon_data.c tests/test_launcher.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
 
+$(BUILD)/test_apps: src/ps5_apps.c src/ps5_launcher.c tests/test_apps.c | $(BUILD)
+	cc $(HOST_CFLAGS) -DAPPS_LAUNCHER_STAMP='"build/test-launcher-installed"' -o $@ $^
+
 # Console notification texts in every language.
 $(BUILD)/test_i18n: src/i18n.c tests/test_i18n.c | $(BUILD)
 	cc $(HOST_CFLAGS) -o $@ $^
@@ -83,7 +86,7 @@ $(BUILD)/test_usb: src/usb_desc.c src/evstream.c tests/test_usb.c | $(BUILD)
 test-usb-poll:
 	python3 tests/test_usb_poll.py
 
-test: test-usb-poll $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_web $(BUILD)/test_launcher $(BUILD)/test_i18n $(BUILD)/test_suspend
+test: test-usb-poll $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(BUILD)/test_vpad $(BUILD)/test_crypto $(BUILD)/test_profiles $(BUILD)/test_host $(BUILD)/test_le $(BUILD)/test_web $(BUILD)/test_launcher $(BUILD)/test_apps $(BUILD)/test_i18n $(BUILD)/test_suspend
 	./$(BUILD)/test_usb
 	./$(BUILD)/test_lock
 	./$(BUILD)/test_config
@@ -94,6 +97,7 @@ test: test-usb-poll $(BUILD)/test_usb $(BUILD)/test_lock $(BUILD)/test_config $(
 	./$(BUILD)/test_le
 	./$(BUILD)/test_web
 	./$(BUILD)/test_launcher
+	./$(BUILD)/test_apps
 	./$(BUILD)/test_i18n
 	./$(BUILD)/test_suspend
 
