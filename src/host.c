@@ -725,6 +725,14 @@ static void sdp_step(host_t *h, link_t *l, long now)
 
 /* ---- HID ------------------------------------------------------------------ */
 
+/* Short, per-link samples only: never dump the continuous input stream. */
+static void report_hex(const unsigned char *rep, int len, char hex[61])
+{
+    int i, n = len < 20 ? len : 20;
+    for (i = 0; i < n; i++) snprintf(hex + 3 * i, 4, "%02x ", rep[i]);
+    hex[3 * n] = 0;
+}
+
 /* Sends an output report: buf[1..n] is the report, id first; buf[0] is
  * room for the Classic HID header. */
 static int send_report(host_t *h, link_t *l, unsigned char *buf, int n)
@@ -770,9 +778,19 @@ static void on_hid(host_t *h, link_t *l, const chan *c, const unsigned char *d, 
     if (len < 1) return;
     if (c == &l->ctrl) {
         if (d[0] == HID_CONTROL_UNPLUG) link_disconnect(h, l, "virtual cable unplugged");
+        else if (l->diag_hid_ignored < 2) {
+            l->diag_hid_ignored++;
+            log_line("pad %s: HID control data ignored: header=%02x len=%d", addr_str(l->addr), d[0], len);
+        }
         return;                         /* handshakes and feature data unused */
     }
-    if (d[0] != HID_DATA_INPUT || len < 2) return;
+    if (d[0] != HID_DATA_INPUT || len < 2) {
+        if (l->diag_hid_ignored < 2) {
+            l->diag_hid_ignored++;
+            log_line("pad %s: HID interrupt data ignored: header=%02x len=%d", addr_str(l->addr), d[0], len);
+        }
+        return;
+    }
     link_input(h, l, d + 1, len - 1);
 }
 
@@ -782,7 +800,27 @@ void link_input(host_t *h, link_t *l, const unsigned char *rep, int len)
     int r;
 
     if (!l->prof || len < 1) return;
+    l->diag_rx++;
     r = l->prof->parse(l->pctx.bytes, rep, len, &l->st);
+    if (l->diag_rx <= 6) {
+        char hex[61];
+        report_hex(rep, len, hex);
+        log_line("pad %s: input sample id=%02x len=%d parse=%d ready=%d bytes=%s",
+                 addr_str(l->addr), rep[0], len, r, l->ready, hex);
+    }
+    if (r != PARSE_NONE) {
+        if (!l->diag_parsed)
+            log_line("pad %s: first parsed input id=%02x len=%d buttons=%08x",
+                     addr_str(l->addr), rep[0], len, (unsigned)l->st.buttons);
+        l->diag_parsed++;
+        if (l->diag_changes < 4 && l->diag_buttons != l->st.buttons) {
+            l->diag_changes++;
+            log_line("pad %s: parsed buttons=%08x axes=%u,%u,%u,%u ready=%d",
+                     addr_str(l->addr), (unsigned)l->st.buttons, l->st.lx, l->st.ly,
+                     l->st.rx, l->st.ry, l->ready);
+        }
+        l->diag_buttons = l->st.buttons;
+    }
     if (r == PARSE_FULL) l->full = 1;
     if (r != PARSE_NONE && l->ready && h->ev.on_state)
         h->ev.on_state(h->ev.ud, slot_of(h, l), &l->st);
@@ -819,7 +857,14 @@ void init_tick(host_t *h, link_t *l, long now)
 
     n = l->prof->init_report(l->pctx.bytes, l->init_step, &l->out, buf + 1, (int)sizeof buf - 1);
     if (n > 0) {
-        send_report(h, l, buf, n);
+        int sent = send_report(h, l, buf, n);
+        if (l->init_rounds == 0 || (!sent && l->diag_init_failures < 3)) {
+            char hex[61];
+            report_hex(buf + 1, n, hex);
+            log_line("pad %s: init round=%d step=%d sent=%d bytes=%s", addr_str(l->addr),
+                     l->init_rounds + 1, l->init_step, sent, hex);
+            if (!sent) l->diag_init_failures++;
+        }
         l->init_step++;
         l->t_init = now;
         return;
@@ -828,7 +873,8 @@ void init_tick(host_t *h, link_t *l, long now)
     if (!l->prof->needs_full || l->full) {
         l->init_done = 1;
     } else if (l->init_rounds >= INIT_ROUNDS) {
-        log_line("pad %s: never switched to its full report", addr_str(l->addr));
+        log_line("pad %s: never switched to its full report (rx=%llu parsed=%llu)", addr_str(l->addr),
+                 (unsigned long long)l->diag_rx, (unsigned long long)l->diag_parsed);
         l->init_done = 1;
     } else {
         l->init_step = -1;

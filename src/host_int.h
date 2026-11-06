@@ -217,6 +217,9 @@ typedef struct {
     union { unsigned char bytes[PROFILE_CTX_MAX]; uint64_t align; } pctx;
     int init_step, init_rounds, init_done, full;
     long t_init;
+    uint64_t diag_rx, diag_parsed;
+    uint32_t diag_buttons;
+    unsigned char diag_changes, diag_hid_ignored, diag_init_failures;
 
     int le;                         /* a Bluetooth LE link */
     le_link le_s;

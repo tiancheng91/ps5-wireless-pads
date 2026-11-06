@@ -2,6 +2,8 @@
 #include "sim.h"
 #include "../src/crc32.h"
 #include "../src/host.h"
+#include "../src/host_int.h"
+#include "../src/log.h"
 #include "../src/util.h"
 
 #include <stdio.h>
@@ -648,8 +650,47 @@ static void test_sdp_parse(void)
     CHECK(!sdp_find_ids(list, 10, &vid, &pid));
 }
 
+static void test_input_diagnostics(void)
+{
+    host_t h = {0};
+    link_t *l = &h.links[0];
+    seen s = {0};
+    unsigned char rep[12] = {0xff};
+    char line[512];
+    int i, samples = 0, first = 0, changes = 0;
+    FILE *f;
+
+    printf("input diagnostics: bounded samples without dropping input callbacks\n");
+    unlink("build/test-input-diag.log");
+    CHECK(log_open("build/test-input-diag.log"));
+    l->prof = profile_find(0x057e, 0x2009);
+    l->ready = 1;
+    h.ev.ud = &s; h.ev.on_state = on_state;
+    for (i = 0; i < 100; i++) link_input(&h, l, rep, sizeof rep);
+    rep[0] = 0x3f; rep[3] = 8;
+    for (i = 0; i < 100; i++) {
+        rep[1] = (unsigned char)(i & 1);
+        link_input(&h, l, rep, sizeof rep);
+    }
+    log_close();
+    CHECK(s.states == 100 && l->diag_rx == 200 && l->diag_parsed == 100);
+    f = fopen("build/test-input-diag.log", "r");
+    CHECK(f != NULL);
+    if (f) {
+        while (fgets(line, sizeof line, f)) {
+            if (strstr(line, "input sample")) samples++;
+            if (strstr(line, "first parsed input")) first++;
+            if (strstr(line, "parsed buttons=")) changes++;
+        }
+        fclose(f);
+    }
+    CHECK(samples == 6 && first == 1 && changes == 4);
+    unlink("build/test-input-diag.log");
+}
+
 int main(void)
 {
+    test_input_diagnostics();
     test_sdp_parse();
     test_pairing(0);
     test_reconnect();
