@@ -413,6 +413,8 @@ static void test_switch_pad(void)
     pad.report_len = 49;
     sim = sim_new(&pad);
     h = open_host(sim, &s);
+    unlink("build/test-acl-diag.log");
+    CHECK(log_open("build/test-acl-diag.log"));
     host_pair(h, 30);
     {
         long until = sim_now() + 10000;
@@ -427,6 +429,28 @@ static void test_switch_pad(void)
     CHECK(sim_outputs(sim) >= 4);           /* the whole wake-up sequence */
     CHECK(s.last.buttons & 0x2000);         /* A, from the full report: circle */
     CHECK(s.last.lx == 128 && s.last.ly == 128);
+    {
+        unsigned char garbage[2] = {0xa1, 0xff};
+        char line[512];
+        int i, acl = 0, frames = 0, unknown = 0, states = s.states;
+        FILE *f;
+        for (i = 0; i < 20; i++) sim_inject_acl(sim, 0x7fff, garbage, sizeof garbage);
+        run(h, 500);
+        CHECK(s.states > states);
+        log_close();
+        f = fopen("build/test-acl-diag.log", "r");
+        CHECK(f != NULL);
+        if (f) {
+            while (fgets(line, sizeof line, f)) {
+                if (strstr(line, "ACL sample")) acl++;
+                if (strstr(line, "L2CAP frame")) frames++;
+                if (strstr(line, "L2CAP unknown cid")) unknown++;
+            }
+            fclose(f);
+        }
+        CHECK(acl == 6 && frames == 6 && unknown == 2);
+        unlink("build/test-acl-diag.log");
+    }
     {
         static const unsigned char neutral[8] = { 0, 1, 0x40, 0x40, 0, 1, 0x40, 0x40 };
         unsigned char out[128];

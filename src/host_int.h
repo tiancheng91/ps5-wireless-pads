@@ -218,6 +218,8 @@ typedef struct {
     int init_step, init_rounds, init_done, full;
     long t_init;
     uint64_t diag_rx, diag_parsed;
+    uint64_t diag_acl, diag_frames;
+    unsigned char diag_acl_errors, diag_unknown_cid;
     uint32_t diag_buttons;
     unsigned char diag_changes, diag_hid_ignored, diag_init_failures;
 
@@ -235,6 +237,7 @@ struct host {
 
     link_t links[HOST_MAX_PADS];
     unsigned char sig_id;
+    unsigned char diag_unknown_handle;
 
     unsigned cc_op;
     unsigned char cc[HCI_PKT_MAX];

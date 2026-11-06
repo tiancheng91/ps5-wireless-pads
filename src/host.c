@@ -837,6 +837,10 @@ void link_ready(host_t *h, link_t *l)
     info.profile = l->prof->name;
     memcpy(info.addr, l->addr, 6);
     log_line("pad %s: ready as %s in slot %d", addr_str(l->addr), l->prof->name, slot_of(h, l));
+    if (!l->le)
+        log_line("pad %s: channels handle=%#x ctrl(local=%#x remote=%#x state=%d) intr(local=%#x remote=%#x state=%d)",
+                 addr_str(l->addr), l->handle, l->ctrl.scid, l->ctrl.dcid, l->ctrl.st,
+                 l->intr.scid, l->intr.dcid, l->intr.st);
     if (h->ev.on_connect) h->ev.on_connect(h->ev.ud, slot_of(h, l), &info);
 }
 
@@ -873,7 +877,8 @@ void init_tick(host_t *h, link_t *l, long now)
     if (!l->prof->needs_full || l->full) {
         l->init_done = 1;
     } else if (l->init_rounds >= INIT_ROUNDS) {
-        log_line("pad %s: never switched to its full report (rx=%llu parsed=%llu)", addr_str(l->addr),
+        log_line("pad %s: never switched to its full report (acl=%llu frames=%llu rx=%llu parsed=%llu)", addr_str(l->addr),
+                 (unsigned long long)l->diag_acl, (unsigned long long)l->diag_frames,
                  (unsigned long long)l->diag_rx, (unsigned long long)l->diag_parsed);
         l->init_done = 1;
     } else {
@@ -896,10 +901,33 @@ static void on_frame(host_t *h, link_t *l, unsigned cid, const unsigned char *d,
         on_signaling(h, l, d, len);
         return;
     }
+    if (l->ready) {
+        l->diag_frames++;
+        if (l->diag_frames <= 6) {
+            char hex[61];
+            report_hex(d, len, hex);
+            log_line("pad %s: L2CAP frame cid=%#x len=%d bytes=%s", addr_str(l->addr), cid, len, hex);
+        }
+    }
     c = chan_by_scid(l, cid);
-    if (!c) return;
+    if (!c) {
+        if (l->diag_unknown_cid < 2) {
+            l->diag_unknown_cid++;
+            log_line("pad %s: L2CAP unknown cid=%#x len=%d (ctrl=%#x intr=%#x)",
+                     addr_str(l->addr), cid, len, l->ctrl.scid, l->intr.scid);
+        }
+        return;
+    }
     if (c == &l->sdp) on_sdp(h, l, d, len);
     else on_hid(h, l, c, d, len);
+}
+
+static void acl_dropped(link_t *l, const char *why, int len)
+{
+    if (l->diag_acl_errors >= 3) return;
+    l->diag_acl_errors++;
+    log_line("pad %s: ACL dropped: %s len=%d buffered=%d need=%d", addr_str(l->addr),
+             why, len, l->rx_len, l->rx_need);
 }
 
 static void on_acl(host_t *h, const unsigned char *pkt, int len)
@@ -913,17 +941,41 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
     pb = (int)(hdr >> 12) & 3;
     dlen = (int)le16(pkt + 2);
     l = link_by_handle(h, hdr);
-    if (!l || 4 + dlen > len) return;   /* not ours, or cut short */
+    if (!l) {
+        if (h->diag_unknown_handle < 3) {
+            h->diag_unknown_handle++;
+            log_line("ACL ignored: unknown handle=%#x pb=%d declared=%d len=%d", hdr & 0xfff, pb, dlen, len);
+        }
+        return;
+    }
+    if (l->ready) {
+        l->diag_acl++;
+        if (l->diag_acl <= 6) {
+            char hex[61];
+            report_hex(pkt + 4, len - 4, hex);
+            log_line("pad %s: ACL sample handle=%#x pb=%d declared=%d len=%d bytes=%s",
+                     addr_str(l->addr), hdr & 0xfff, pb, dlen, len, hex);
+        }
+    }
+    if (4 + dlen > len) {
+        acl_dropped(l, "truncated packet", dlen);
+        return;
+    }
 
     if (pb == 1) {                      /* continuation */
         if (!l->rx_need || l->rx_len + dlen > (int)sizeof l->rx) {
+            acl_dropped(l, "orphan/oversized continuation", dlen);
             l->rx_need = 0;
             return;
         }
         memcpy(l->rx + l->rx_len, pkt + 4, (size_t)dlen);
         l->rx_len += dlen;
     } else {                            /* start: a lost tail is abandoned */
-        if (dlen < 4 || dlen > (int)sizeof l->rx) return;
+        if (dlen < 4 || dlen > (int)sizeof l->rx) {
+            acl_dropped(l, "invalid start length", dlen);
+            return;
+        }
+        if (l->ready && l->rx_need) acl_dropped(l, "new start before previous frame finished", dlen);
         memcpy(l->rx, pkt + 4, (size_t)dlen);
         l->rx_len = dlen;
         l->rx_need = 4 + (int)le16(pkt + 4);
