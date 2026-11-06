@@ -79,6 +79,8 @@
 #define SDP_TRIES          3
 #define T_INIT_STEP       60    /* between wake-up reports */
 #define T_INIT_RETRY     800    /* before repeating an unanswered sequence */
+#define T_FIRST_INPUT 15000    /* only before the first valid report */
+#define T_INQUIRY_RETRY 1000
 #define INIT_ROUNDS        5
 
 #define SDP_Q_IDS          1    /* Device ID: vendor and product */
@@ -216,7 +218,7 @@ typedef struct {
     /* The profile's own memory, and its wake-up sequence. */
     union { unsigned char bytes[PROFILE_CTX_MAX]; uint64_t align; } pctx;
     int init_step, init_rounds, init_done, full;
-    long t_init;
+    long t_init, t_ready;
     uint64_t diag_rx, diag_parsed;
     uint64_t diag_acl, diag_frames;
     unsigned char diag_acl_errors, diag_unknown_cid, diag_le_output_errors;
@@ -264,7 +266,7 @@ struct host {
     int le_diag_n, le_diag_skipped;
     link_t *dhkey_owner;            /* the link a DHKey is being made for */
 
-    long pair_until;
+    long pair_until, inquiry_retry_at;
     long purge_at;                  /* when stale links were last cleared */
     int inquiring;
     int dead;               /* the transport is gone */
@@ -291,10 +293,10 @@ void link_input(host_t *h, link_t *l, const unsigned char *rep, int len);
 int  l2_send(host_t *h, link_t *l, unsigned cid, const unsigned char *d, int len);
 void init_tick(host_t *h, link_t *l, long now);
 
-db_rec *db_find(host_t *h, const unsigned char *addr);
-db_rec *db_put(host_t *h, const unsigned char *addr);
+db_rec *db_find(host_t *h, const unsigned char *addr, int le);
+db_rec *db_put(host_t *h, const unsigned char *addr, int le);
 void db_save(host_t *h);
-void db_forget(host_t *h, const unsigned char *addr);
+void db_forget(host_t *h, const unsigned char *addr, int le);
 
 /* le.c */
 void le_setup(host_t *h);

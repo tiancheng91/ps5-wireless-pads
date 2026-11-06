@@ -711,7 +711,7 @@ static void test_identity_publication(void)
     CHECK(!classic_setup_pending(&h));
     good->disconnecting = 0;
     link_ready(&h, good);
-    CHECK(!classic_setup_pending(&h));
+    CHECK(classic_setup_pending(&h));
     CHECK(!s.connects);
     link_input(&h, good, report, sizeof report);
     CHECK(s.connects == 1 && s.states == 1 && bad->disconnecting);
@@ -736,6 +736,90 @@ static void test_identity_publication(void)
     memcpy(different->le_s.id_addr, identity, 6);
     link_input(&h, different, report, sizeof report);
     CHECK(different->disconnecting && identity_disconnects == 3);
+}
+
+static void test_bond_transport_isolation(void)
+{
+    host_t h = {0};
+    const unsigned char addr[6] = {1, 2, 3, 4, 5, 6};
+    snprintf(h.db_path, sizeof h.db_path, "build/test-isolated-bonds.db");
+    db_rec *classic = db_put(&h, addr, 0);
+    memset(classic->key, 0x11, 16);
+    db_rec *le = db_put(&h, addr, 1);
+    memset(le->key, 0x22, 16);
+    CHECK(h.ndb == 2 && classic != le);
+    CHECK(db_find(&h, addr, 0)->key[0] == 0x11);
+    CHECK(db_find(&h, addr, 1)->key[0] == 0x22);
+    db_forget(&h, addr, 1);
+    CHECK(h.ndb == 1 && db_find(&h, addr, 0)->key[0] == 0x11);
+    CHECK(!db_find(&h, addr, 1));
+    db_put(&h, addr, 1);
+    CHECK(host_forget(&h, addr) && h.ndb == 0);
+    remove(h.db_path);
+}
+
+static void test_inquiry_backoff_and_pairing_order(void)
+{
+    sim_pad pad = {0};
+    sim_t *sim = sim_new(&pad);
+    host_t h = {0};
+    const unsigned char addr[6] = {1, 2, 3, 4, 5, 6};
+    unsigned char status[] = {0x0c, 1, OP_INQUIRY & 255, OP_INQUIRY >> 8};
+    unsigned char found[15] = {1, 6, 5, 4, 3, 2, 1, 1, 0, 8, 0x25, 0, 0, 0, 0};
+    h.hci = sim_hci(sim);
+    h.last_rx = now_ms();
+    h.inquiring = 1;
+    sim_inject_event(sim, 0x0f, status, sizeof status);
+    host_poll(&h, 0);
+    CHECK(!h.inquiring && h.inquiry_retry_at > now_ms());
+    h.pair_until = now_ms() + 60000;
+    host_poll(&h, 0);
+    CHECK(!h.inquiring); /* Rejected inquiry is not immediately retried. */
+
+    link_t *l = link_new(&h, addr);
+    l->le = l->connected = l->ready = l->disconnecting = 1;
+    l->prof = profile_find(0x057e, 0x2009);
+    /* A live LE setup blocks an arriving Classic discovery record.
+     * Keep encryption waiting so this test sends no GATT requests. */
+    l->disconnecting = 0;
+    l->t_ready = l->t_conn = now_ms();
+    l->le_s.bonded = 1;
+    l->le_s.enc_sent = 1;
+    l->le_s.t_enc = now_ms();
+    db_put(&h, addr, 1);
+    sim_inject_event(sim, 0x22, found, sizeof found);
+    host_poll(&h, 0);
+    CHECK(!h.links[1].used);
+    CHECK(!h.inquiring);
+    sim_free(sim);
+}
+
+static void test_first_input_timeout(void)
+{
+    sim_pad pad = {0};
+    sim_t *sim = sim_new(&pad);
+    host_t h = {0};
+    const unsigned char addr[6] = {1, 2, 3, 4, 5, 6};
+    h.hci = sim_hci(sim);
+    h.last_rx = now_ms();
+    link_t *l = link_new(&h, addr);
+    l->connected = l->auth_ok = l->enc_on = 1;
+    l->prof = profile_find(0x057e, 0x2009);
+    link_ready(&h, l);
+    l->t_ready = now_ms() - T_FIRST_INPUT;
+    host_poll(&h, 0);
+    CHECK(l->disconnecting);
+    /* The same elapsed time must not disconnect a published controller. */
+    memset(l, 0, sizeof *l);
+    l = link_new(&h, addr);
+    l->connected = l->auth_ok = l->enc_on = 1;
+    l->prof = profile_find(0x057e, 0x2009);
+    link_ready(&h, l);
+    l->announced = 1;
+    l->t_ready = now_ms() - T_FIRST_INPUT;
+    host_poll(&h, 0);
+    CHECK(!l->disconnecting);
+    sim_free(sim);
 }
 
 static void test_input_diagnostics(void)
@@ -778,6 +862,9 @@ static void test_input_diagnostics(void)
 
 int main(void)
 {
+    test_bond_transport_isolation();
+    test_inquiry_backoff_and_pairing_order();
+    test_first_input_timeout();
     test_identity_publication();
     test_input_diagnostics();
     test_sdp_parse();

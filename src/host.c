@@ -46,7 +46,16 @@ int classic_setup_pending(const host_t *h)
     int i;
     for (i = 0; i < HOST_MAX_PADS; i++) {
         const link_t *l = &h->links[i];
-        if (l->used && !l->le && !l->ready && !l->disconnecting) return 1;
+        if (l->used && !l->le && !l->announced && !l->disconnecting) return 1;
+    }
+    return 0;
+}
+
+static int le_setup_pending(const host_t *h)
+{
+    for (int i = 0; i < HOST_MAX_PADS; i++) {
+        const link_t *l = &h->links[i];
+        if (l->used && l->le && !l->announced && !l->disconnecting) return 1;
     }
     return 0;
 }
@@ -133,12 +142,12 @@ void link_disconnect(host_t *h, link_t *l, const char *why)
 
 /* ---- paired-pad store ----------------------------------------------------- */
 
-db_rec *db_find(host_t *h, const unsigned char *addr)
+db_rec *db_find(host_t *h, const unsigned char *addr, int le)
 {
     int i;
 
     for (i = 0; i < h->ndb; i++)
-        if (memcmp(h->db[i].addr, addr, 6) == 0) return &h->db[i];
+        if (h->db[i].le == le && memcmp(h->db[i].addr, addr, 6) == 0) return &h->db[i];
     return NULL;
 }
 
@@ -216,9 +225,9 @@ static void db_load(host_t *h)
     log_line("store: %d paired pad(s)", h->ndb);
 }
 
-db_rec *db_put(host_t *h, const unsigned char *addr)
+db_rec *db_put(host_t *h, const unsigned char *addr, int le)
 {
-    db_rec *d = db_find(h, addr);
+    db_rec *d = db_find(h, addr, le);
 
     if (d) return d;
     if (h->ndb == DB_MAX) {             /* full: forget the oldest */
@@ -228,12 +237,13 @@ db_rec *db_put(host_t *h, const unsigned char *addr)
     d = &h->db[h->ndb++];
     memset(d, 0, sizeof *d);
     memcpy(d->addr, addr, 6);
+    d->le = le;
     return d;
 }
 
-void db_forget(host_t *h, const unsigned char *addr)
+void db_forget(host_t *h, const unsigned char *addr, int le)
 {
-    db_rec *d = db_find(h, addr);
+    db_rec *d = db_find(h, addr, le);
 
     if (!d) return;
     memmove(d, d + 1, sizeof *d * (size_t)(h->ndb - (d - h->db) - 1));
@@ -669,7 +679,7 @@ static void sdp_finish(host_t *h, link_t *l, int ok)
     if (query == SDP_Q_IDS) {
         uint16_t vid = 0, pid = 0;
         if (ok && sdp_find_ids(l->sdp_buf, l->sdp_len, &vid, &pid)) {
-            db_rec *r = db_put(h, l->addr);
+            db_rec *r = db_put(h, l->addr, 0);
             r->vid = vid;
             r->pid = pid;
             db_save(h);
@@ -874,6 +884,7 @@ void link_input(host_t *h, link_t *l, const unsigned char *rep, int len)
 void link_ready(host_t *h, link_t *l)
 {
     l->ready = 1;
+    l->t_ready = now_ms();
     log_line("pad %s: ready as %s in slot %d", addr_str(l->addr), l->prof->name, slot_of(h, l));
     if (!l->le)
         log_line("pad %s: channels handle=%#x ctrl(local=%#x remote=%#x state=%d) intr(local=%#x remote=%#x state=%d)",
@@ -1032,10 +1043,10 @@ static void pair_with(host_t *h, const unsigned char *rec)
     unsigned char p[13];
     link_t *l;
 
-    if (link_by_addr(h, rec)) return;
-    if (db_find(h, rec)) {
+    if (link_by_addr(h, rec) || le_setup_pending(h)) return;
+    if (db_find(h, rec, 0)) {
         log_line("pad %s: in pairing mode again, forgetting its old key", addr_str(rec));
-        db_forget(h, rec);
+        db_forget(h, rec, 0);
     }
     l = link_new(h, rec);
     if (!l) {
@@ -1105,6 +1116,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x01:  /* Inquiry Complete */
         log_line("inquiry: finished (status %#04x)", len > 2 ? ev[2] : 0xFF);
         h->inquiring = 0;
+        if (len < 3 || ev[2]) h->inquiry_retry_at = now_ms() + T_INQUIRY_RETRY;
         break;
 
     case 0x02:  /* Inquiry Result: addr, scan mode, 2 reserved, class, clock */
@@ -1130,8 +1142,8 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x04:  /* Connection Request: addr, class, link type */
         if (len < 12 || ev[11] != 1) break;
         {
-            db_rec *r = db_find(h, ev + 2);
-            if (!r || r->le || link_by_addr(h, ev + 2)) break;      /* not ours */
+            db_rec *r = db_find(h, ev + 2, 0);
+            if (!r || r->le || link_by_addr(h, ev + 2) || le_setup_pending(h)) break;      /* not ours */
         }
         l = link_new(h, ev + 2);
         memcpy(p, ev + 2, 6);
@@ -1172,7 +1184,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
             break;
         }
         log_line("pad %s: authentication failed (status %#04x)", addr_str(l->addr), ev[2]);
-        if (!l->pairing) db_forget(h, l->addr);     /* the pad lost its key */
+        if (!l->pairing) db_forget(h, l->addr, 0);     /* the pad lost its key */
         link_disconnect(h, l, "authentication failed");
         break;
 
@@ -1208,7 +1220,10 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x0F:  /* Command Status: status, credits, opcode */
         if (len >= 6 && le16(ev + 4) == OP_INQUIRY) {
             log_line("inquiry: controller answered status %#04x", ev[2]);
-            if (ev[2] != 0) h->inquiring = 0;
+            if (ev[2] != 0) {
+                h->inquiring = 0;
+                h->inquiry_retry_at = now_ms() + T_INQUIRY_RETRY;
+            }
         }
         if (len >= 6 && le16(ev + 4) == 0x200D) {      /* LE Create Connection: le.c */
             le_on_create_status(h, ev[2]);
@@ -1257,7 +1272,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x17:  /* Link Key Request */
         if (len < 8 || !link_by_addr(h, ev + 2)) break;
         {
-            db_rec *r = db_find(h, ev + 2);
+            db_rec *r = db_find(h, ev + 2, 0);
             if (r) {
                 memcpy(p, ev + 2, 6);
                 memcpy(p + 6, r->key, 16);
@@ -1271,7 +1286,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
     case 0x18:  /* Link Key Notification: addr, key, type */
         if (len < 25 || !(l = link_by_addr(h, ev + 2))) break;
         {
-            db_rec *r = db_put(h, ev + 2);
+            db_rec *r = db_put(h, ev + 2, 0);
             memcpy(r->key, ev + 8, 16);
             r->type = ev[24];
             db_save(h);
@@ -1347,7 +1362,7 @@ static void link_step(host_t *h, link_t *l, long now)
     /* Which pad is it: the store, the pad's Device ID record, and for pads
      * with no profile, the pad's own HID descriptor. */
     if (!l->ids_known && !l->sdp_query) {
-        db_rec *r = db_find(h, l->addr);
+        db_rec *r = db_find(h, l->addr, 0);
         if (r && (r->vid || r->pid)) {
             l->vid = r->vid;
             l->pid = r->pid;
@@ -1417,6 +1432,7 @@ static void start_inquiry(host_t *h)
         h->inquiring = 1;
         log_line("inquiry: started");
     } else {
+        h->inquiry_retry_at = now_ms() + T_INQUIRY_RETRY;
         static int fails;
         if (fails++ < 5) log_line("inquiry: the command could not be sent");
     }
@@ -1436,8 +1452,11 @@ void host_poll(host_t *h, int timeout_ms)
         int interval;
 
         if (!h->links[i].used) continue;
+        if (l->ready && !l->announced && !l->disconnecting &&
+            now - l->t_ready >= T_FIRST_INPUT)
+            link_disconnect(h, l, "no valid input after setup");
         link_step(h, l, now);
-        if (l->used && l->pairing && !l->ready && !l->le) linking = 1;
+        if (l->used && !l->announced && !l->disconnecting && !l->le) linking = 1;
         if (!l->used || !l->ready || l->disconnecting) continue;
         interval = l->prof->rumble_refresh_ms;
         if (l->game_until && now >= l->game_until) {
@@ -1481,7 +1500,8 @@ void host_poll(host_t *h, int timeout_ms)
     }
 
     /* Keep searching through the pairing window, one pad at a time. */
-    if (now < h->pair_until && !h->inquiring && !linking) start_inquiry(h);
+    if (now < h->pair_until && !h->inquiring && !linking && !le_setup_pending(h) &&
+        now >= h->inquiry_retry_at) start_inquiry(h);
     if (now >= h->pair_until && h->inquiring) {
         send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
         h->inquiring = 0;
@@ -1600,7 +1620,7 @@ int host_paired_get(const host_t *h, int i, host_paired_info *out)
     out->le = d->le;
     for (k = 0; k < HOST_MAX_PADS; k++) {
         const link_t *l = &h->links[k];
-        if (l->used && l->announced && !l->disconnecting && memcmp(link_identity(l), d->addr, 6) == 0) out->connected = 1;
+        if (l->used && l->le == d->le && l->announced && !l->disconnecting && memcmp(link_identity(l), d->addr, 6) == 0) out->connected = 1;
     }
     return 1;
 }
@@ -1625,13 +1645,14 @@ int host_forget(host_t *h, const unsigned char addr[6])
 {
     int k;
 
-    if (!db_find(h, addr)) return 0;
+    if (!db_find(h, addr, 0) && !db_find(h, addr, 1)) return 0;
     for (k = 0; k < HOST_MAX_PADS; k++) {
         link_t *l = &h->links[k];
         if (l->used && memcmp(link_identity(l), addr, 6) == 0)
             link_disconnect(h, l, "forgotten from the web page");
     }
-    db_forget(h, addr);
+    db_forget(h, addr, 0);
+    db_forget(h, addr, 1);
     log_line("pad %s: forgotten", addr_str(addr));
     return 1;
 }

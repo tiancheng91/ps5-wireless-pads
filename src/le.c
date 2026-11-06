@@ -144,7 +144,7 @@ static const uint8_t *link_id_addr(const link_t *l)
 
 static db_rec *link_db(host_t *h, const link_t *l)
 {
-    return db_find(h, link_id_addr(l));
+    return db_find(h, link_id_addr(l), 1);
 }
 
 /* A paired LE pad behind this advertised address: by address, or a
@@ -685,14 +685,14 @@ static void bond_save(host_t *h, link_t *l)
     db_rec *d;
 
     if (e->keys_got & 0x02) {           /* the pad's identity address */
-        d = db_put(h, e->id_addr);
+        d = db_put(h, e->id_addr, 1);
         d->addr_type = e->id_type;
         memcpy(d->irk, e->dist_irk, 16);    /* kept as sent: LSB first */
         d->has_irk = 1;
     } else {
         memcpy(e->id_addr, l->addr, 6);
         e->id_type = e->addr_type;
-        d = db_put(h, l->addr);
+        d = db_put(h, l->addr, 1);
         d->addr_type = e->addr_type;
         d->has_irk = 0;
     }
@@ -917,7 +917,7 @@ void le_on_encryption(host_t *h, link_t *l, int status, int on)
     log_line("le pad %s: encryption failed (status %#04x)", addr_str(l->addr), status);
     if (e->bonded && !l->pairing && (status == 0x06 || status == 0x05)) {
         log_line("le pad %s: it forgot us; pair it again", addr_str(l->addr));
-        db_forget(h, link_id_addr(l));
+        db_forget(h, link_id_addr(l), 1);
     }
     link_disconnect(h, l, "encryption failed");
 }
