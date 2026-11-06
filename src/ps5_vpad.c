@@ -304,7 +304,7 @@ static int32_t main_user(void)
     if (sceUserServiceGetLoginUserIdList(login) != 0) login[0] = login[1] = login[2] = login[3] = -1;
     if (sceUserServiceGetInitialUser(&init) != 0) init = -1;
     if (sceUserServiceGetForegroundUser(&fore) != 0) fore = -1;
-    if ((f = fopen("/data/padbridge/bind_user", "r"))) {
+    if ((f = fopen(VPAD_BIND_USER_PATH, "r"))) {
         if (fgets(want, sizeof want, f)) {
             for (i = 0; want[i]; i++) if (want[i] == '\n' || want[i] == '\r' || want[i] == ' ') want[i] = 0;
             if (strncmp(want, "0x", 2) == 0) memmove(want, want + 2, strlen(want + 2) + 1);
@@ -447,12 +447,6 @@ static void start_identification(int slot)
     int32_t r;
     int i;
 
-    if (g_user == -1) g_user = main_user();     /* signed in since */
-    if (g_user == -1) {
-        log_line("slot %d: nobody signed in, no virtual pad", slot);
-        g_slot[slot].st = VP_FAILED;
-        return;
-    }
     if (!vpad_creds_raise()) {
         g_slot[slot].st = VP_FAILED;
         return;
@@ -506,13 +500,33 @@ static void finish_identification(long now)
         memset(v, 0, sizeof *v);
         return;
     }
+    /* Let the system assign a user on Home, as the reference padbridge does.
+     * An explicit bind_user file preserves the old experimental override. */
+    {
+        char want[40] = "";
+        FILE *f = fopen(VPAD_BIND_USER_PATH, "r");
+        if (f) {
+            if (!fgets(want, sizeof want, f)) want[0] = 0;
+            fclose(f);
+        }
+        if (!want[0] || want[0] == '\n' || want[0] == '\r') {
+            v->st = VP_READY;
+            log_line("slot %d: device %#llx unassigned; press Home to choose its user", slot,
+                     (unsigned long long)v->dev);
+            return;
+        }
+    }
+    g_user = main_user();
+    if (g_user == -1) {
+        v->st = VP_READY;
+        log_line("slot %d: no signed-in override user; leaving device unassigned", slot);
+        return;
+    }
     r = g_bind(v->dev, g_user);
     log_line("slot %d: device %#llx bound to user %#x: %#x", slot, (unsigned long long)v->dev,
              (unsigned)g_user, (unsigned)r);
     if (r != 0) {
-        scePadVirtualDeviceDeleteDevice(v->handle);     /* ours, identified */
-        v->st = VP_FAILED;
-        return;
+        log_line("slot %d: override bind failed; leaving device for system user selection", slot);
     }
     v->st = VP_READY;
 }

@@ -1,5 +1,5 @@
 /* Each connected Bluetooth pad becomes a virtual DualSense on the console,
- * bound to the main user (the one in the foreground, who ran the jailbreak).
+ * assigned by the system when Home is pressed; bind_user is an explicit override.
  *
  * The PS5 path:
  *
@@ -19,6 +19,10 @@
  */
 #ifndef PH_PS5_VPAD_H
 #define PH_PS5_VPAD_H
+
+#ifndef VPAD_BIND_USER_PATH
+#define VPAD_BIND_USER_PATH "/data/padbridge/bind_user"
+#endif
 
 #include "pad.h"
 

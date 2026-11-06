@@ -34,6 +34,13 @@ int send_cmd(host_t *h, unsigned op, const void *p, int len)
 
 int slot_of(host_t *h, const link_t *l) { return (int)(l - h->links); }
 
+static const unsigned char *link_identity(const link_t *l)
+{
+    static const unsigned char zero[6];
+    if (l->le && memcmp(l->le_s.id_addr, zero, 6) != 0) return l->le_s.id_addr;
+    return l->addr;
+}
+
 link_t *link_by_addr(host_t *h, const unsigned char *a)
 {
     int i;
@@ -84,7 +91,7 @@ link_t *link_new(host_t *h, const unsigned char *addr)
 
 void link_free(host_t *h, link_t *l)
 {
-    if (l->ready && h->ev.on_disconnect) h->ev.on_disconnect(h->ev.ud, slot_of(h, l));
+    if (l->announced && h->ev.on_disconnect) h->ev.on_disconnect(h->ev.ud, slot_of(h, l));
     memset(l, 0, sizeof *l);
 }
 
@@ -794,6 +801,34 @@ static void on_hid(host_t *h, link_t *l, const chan *c, const unsigned char *d, 
     link_input(h, l, d + 1, len - 1);
 }
 
+/* Publish only a link that actually delivers input. Transport and identity
+ * addresses can differ after LE pairing; compare the confirmed identities. */
+static int publish_link(host_t *h, link_t *l)
+{
+    pad_info info;
+    int i;
+    if (l->disconnecting) return 0;
+    for (i = 0; i < HOST_MAX_PADS; i++) {
+        link_t *other = &h->links[i];
+        if (other == l || !other->used || other->disconnecting ||
+            memcmp(link_identity(other), link_identity(l), 6)) continue;
+        if (other->announced && (!l->announced || i < slot_of(h, l))) {
+            link_disconnect(h, l, "duplicate device identity with working input");
+            return 0;
+        }
+        link_disconnect(h, other, "replaced by same identity with working input");
+    }
+    if (l->announced) return 1;
+    l->announced = 1;
+    memset(&info, 0, sizeof info);
+    info.vid = l->vid; info.pid = l->pid; info.profile = l->prof->name;
+    memcpy(info.addr, link_identity(l), 6);
+    log_line("pad %s: input ready in slot %d (identity %s)", addr_str(l->addr),
+             slot_of(h, l), addr_str(info.addr));
+    if (h->ev.on_connect) h->ev.on_connect(h->ev.ud, slot_of(h, l), &info);
+    return 1;
+}
+
 /* One input report, id first, from either transport. */
 void link_input(host_t *h, link_t *l, const unsigned char *rep, int len)
 {
@@ -822,26 +857,19 @@ void link_input(host_t *h, link_t *l, const unsigned char *rep, int len)
         l->diag_buttons = l->st.buttons;
     }
     if (r == PARSE_FULL) l->full = 1;
-    if (r != PARSE_NONE && l->ready && h->ev.on_state)
+    if (r != PARSE_NONE && l->ready && publish_link(h, l) && h->ev.on_state)
         h->ev.on_state(h->ev.ud, slot_of(h, l), &l->st);
 }
 
 void link_ready(host_t *h, link_t *l)
 {
-    pad_info info;
-
     l->ready = 1;
-    memset(&info, 0, sizeof info);
-    info.vid = l->vid;
-    info.pid = l->pid;
-    info.profile = l->prof->name;
-    memcpy(info.addr, l->addr, 6);
     log_line("pad %s: ready as %s in slot %d", addr_str(l->addr), l->prof->name, slot_of(h, l));
     if (!l->le)
         log_line("pad %s: channels handle=%#x ctrl(local=%#x remote=%#x state=%d) intr(local=%#x remote=%#x state=%d)",
                  addr_str(l->addr), l->handle, l->ctrl.scid, l->ctrl.dcid, l->ctrl.st,
                  l->intr.scid, l->intr.dcid, l->intr.st);
-    if (h->ev.on_connect) h->ev.on_connect(h->ev.ud, slot_of(h, l), &info);
+    if (l->diag_parsed) publish_link(h, l);
 }
 
 /* Sends the pad's wake-up sequence one report at a time, and repeats it
@@ -1531,7 +1559,7 @@ int host_rumble_pulse(host_t *h, int slot, int ms)
 
 int host_connected(const host_t *h, int slot)
 {
-    return slot >= 0 && slot < HOST_MAX_PADS && h->links[slot].used && h->links[slot].ready;
+    return slot >= 0 && slot < HOST_MAX_PADS && h->links[slot].used && h->links[slot].announced && !h->links[slot].disconnecting;
 }
 
 int host_paired_count(const host_t *h) { return h->ndb; }
@@ -1546,12 +1574,7 @@ int host_pairing_left(const host_t *h)
 
 /* The address a link's pad is stored under: its identity, for LE pads
  * behind private addresses. */
-static const unsigned char *link_identity(const link_t *l)
-{
-    static const unsigned char zero[6];
-    if (l->le && memcmp(l->le_s.id_addr, zero, 6) != 0) return l->le_s.id_addr;
-    return l->addr;
-}
+
 
 int host_paired_get(const host_t *h, int i, host_paired_info *out)
 {
@@ -1567,7 +1590,7 @@ int host_paired_get(const host_t *h, int i, host_paired_info *out)
     out->le = d->le;
     for (k = 0; k < HOST_MAX_PADS; k++) {
         const link_t *l = &h->links[k];
-        if (l->used && l->ready && memcmp(link_identity(l), d->addr, 6) == 0) out->connected = 1;
+        if (l->used && l->announced && !l->disconnecting && memcmp(link_identity(l), d->addr, 6) == 0) out->connected = 1;
     }
     return 1;
 }
@@ -1578,7 +1601,7 @@ int host_pad_get(const host_t *h, int slot, pad_info *info, pad_state *st)
 
     if (slot < 0 || slot >= HOST_MAX_PADS) return 0;
     l = &h->links[slot];
-    if (!l->used || !l->ready) return 0;
+    if (!l->used || !l->announced || l->disconnecting) return 0;
     memset(info, 0, sizeof *info);
     info->vid = l->vid;
     info->pid = l->pid;

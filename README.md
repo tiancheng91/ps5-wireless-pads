@@ -146,6 +146,19 @@ Rest mode does not require it (see [What's new](#whats-new-in-this-fork)).
 Pairing is stored in `/data/padbridge/pads.db`; afterwards just turn the controller on. To give a controller
 without a PS button the console's focus, press **Press PS** on its card in the web page.
 
+A controller appears on the page and gets a virtual DualSense only after its first
+successfully parsed input. Press Home/PS and choose the console user who will use it;
+for player two, choose a second user. The payload no longer forces every controller
+onto the initial user. Remove an old `/data/padbridge/bind_user` file to use system
+selection; keeping that file explicitly requests the previous binding override.
+User selection is currently required again after reconnecting. This follows
+[padbridge's user-assignment design](https://github.com/sub0x00001/padbridge).
+
+LE connection addresses can differ from their paired identity address. Links with
+the same confirmed identity share one published controller: a working link replaces
+an input-less duplicate, and a second working duplicate is disconnected. Similar
+addresses or matching vendor/product IDs alone are never used to merge devices.
+
 ### Xbox button mapping
 
 | Xbox | PS5 |

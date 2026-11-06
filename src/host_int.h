@@ -200,7 +200,7 @@ typedef struct {
     int sdp_len;
 
     chan sdp, ctrl, intr;
-    int ready, disconnecting;
+    int ready, announced, disconnecting;
 
     unsigned char rx[1024];
     int rx_len, rx_need;

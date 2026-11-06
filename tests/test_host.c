@@ -674,6 +674,65 @@ static void test_sdp_parse(void)
     CHECK(!sdp_find_ids(list, 10, &vid, &pid));
 }
 
+static int identity_disconnects;
+static int identity_command(void *ctx, unsigned opcode, const void *p, int len)
+{
+    (void)ctx; (void)p; (void)len;
+    CHECK(opcode == OP_DISCONNECT);
+    identity_disconnects++;
+    return 1;
+}
+
+static void test_identity_publication(void)
+{
+    host_t h = {0};
+    seen s = {0};
+    static const hci_ops ops = {.cmd = identity_command};
+    const unsigned char identity[6] = {2, 0xbc, 0x65, 0x1d, 0x10, 0xe0};
+    unsigned char alias[6] = {2, 0xbc, 0x6b, 0x1d, 0x10, 0xe0};
+    unsigned char report[12] = {0x3f, 1, 0, 8};
+    link_t *bad, *good, *duplicate, *different;
+    pad_info info;
+    pad_state state;
+    printf("identity deduplication: first valid input, LE aliases and distinct pads\n");
+    h.hci.ops = &ops; h.ev.ud = &s;
+    h.ev.on_connect = on_connect; h.ev.on_state = on_state;
+    identity_disconnects = 0;
+    bad = link_new(&h, alias);
+    bad->le = bad->connected = 1;
+    memcpy(bad->le_s.id_addr, identity, 6);
+    bad->prof = profile_find(0x057e, 0x2009);
+    link_ready(&h, bad);
+    CHECK(!s.connects && !host_pad_get(&h, 0, &info, &state));
+    good = link_new(&h, identity);
+    good->connected = 1; good->prof = bad->prof;
+    link_ready(&h, good);
+    CHECK(!s.connects);
+    link_input(&h, good, report, sizeof report);
+    CHECK(s.connects == 1 && s.states == 1 && bad->disconnecting);
+    CHECK(host_pad_get(&h, 1, &info, &state) && !memcmp(info.addr, identity, 6));
+    link_input(&h, bad, report, sizeof report);
+    CHECK(s.connects == 1 && s.states == 1);
+    alias[2] = 0x70;
+    duplicate = link_new(&h, alias);
+    duplicate->le = duplicate->connected = 1; duplicate->prof = good->prof;
+    memcpy(duplicate->le_s.id_addr, identity, 6);
+    link_ready(&h, duplicate);
+    link_input(&h, duplicate, report, sizeof report);
+    CHECK(duplicate->disconnecting && s.connects == 1);
+    alias[2] = 0x71;
+    different = link_new(&h, alias);
+    different->connected = 1; different->prof = good->prof;
+    link_ready(&h, different);
+    link_input(&h, different, report, sizeof report);
+    CHECK(s.connects == 2 && !different->disconnecting);
+    /* Identity may become known after input already started. */
+    different->le = 1;
+    memcpy(different->le_s.id_addr, identity, 6);
+    link_input(&h, different, report, sizeof report);
+    CHECK(different->disconnecting && identity_disconnects == 3);
+}
+
 static void test_input_diagnostics(void)
 {
     host_t h = {0};
@@ -714,6 +773,7 @@ static void test_input_diagnostics(void)
 
 int main(void)
 {
+    test_identity_publication();
     test_input_diagnostics();
     test_sdp_parse();
     test_pairing(0);

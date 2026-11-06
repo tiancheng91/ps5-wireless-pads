@@ -111,7 +111,10 @@ int32_t kernel_get_ucred_caps(pid_t pid, uint8_t c[16]) { (void)pid; memcpy(c, g
 int32_t kernel_set_ucred_caps(pid_t pid, const uint8_t c[16]) { (void)pid; memcpy(g_caps, c, 16); return 0; }
 int sceKernelSendNotificationRequest(int a, void *r, size_t n, int b) { (void)a; (void)r; (void)n; (void)b; return 0; }
 
-static int32_t fake_bind(uint64_t d, int32_t u) { (void)d; (void)u; return 0; }
+static int g_bind_calls;
+static int g_bind_result;
+static int32_t g_bound_user;
+static int32_t fake_bind(uint64_t d, int32_t u) { (void)d; g_bind_calls++; g_bound_user = u; return g_bind_result; }
 static int32_t fake_remote(int32_t handle, void *setting)
 {
     uint8_t *bytes = setting;
@@ -166,7 +169,9 @@ static void test_feedback(void)
     if (pipe(fds) != 0) { CHECK(0); return; }
     g_klog_read = fds[0]; g_klog_write = fds[1];
     CHECK(fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0);
+    unlink(VPAD_BIND_USER_PATH);
     create_virtual(0);
+    CHECK(g_bind_calls == 0); /* System, not payload, assigns the player. */
     g_remote_strong = 200; g_remote_weak = 70;
     CHECK(vpad_read_rumble(0, g_now, &strong, &weak));
     CHECK(strong == 200 && weak == 70 && g_remote_handle == 0x10001);
@@ -189,7 +194,14 @@ static void test_feedback(void)
     vpad_remove(0);
     CHECK(!vpad_read_rumble(0, g_now, &strong, &weak));
     g_remote_result = 0;
+    {
+        FILE *f = fopen(VPAD_BIND_USER_PATH, "w");
+        CHECK(f != NULL);
+        if (f) { fputs("main\n", f); fclose(f); }
+    }
     create_virtual(0);
+    CHECK(g_bind_calls == 1 && g_bound_user == g_init_user);
+    unlink(VPAD_BIND_USER_PATH);
     CHECK(vpad_read_rumble(0, g_now, &strong, &weak));
     CHECK(g_remote_handle == 0x10002);
     g_remote_available = 0;
@@ -200,6 +212,27 @@ static void test_feedback(void)
     CHECK(!vpad_read_rumble(0, g_now, &strong, &weak) && g_remote_calls == before);
     CHECK(vpad_live(0));
     vpad_remove(0);
+    {
+        FILE *f = fopen(VPAD_BIND_USER_PATH, "w");
+        CHECK(f != NULL);
+        if (f) { fputs("main\n", f); fclose(f); }
+        g_bind_result = -1;
+        create_virtual(0);
+        CHECK(vpad_live(0) && g_bind_calls == 2); /* Failed override keeps system selection possible. */
+        vpad_remove(0);
+        unlink(VPAD_BIND_USER_PATH);
+        g_bind_result = 0;
+    }
+    {
+        int32_t saved[4];
+        memcpy(saved, g_login, sizeof saved);
+        memset(g_login, 0xff, sizeof g_login);
+        CHECK(vpad_init());
+        create_virtual(0);
+        CHECK(vpad_live(0) && g_bind_calls == 2); /* No login required before Home. */
+        vpad_remove(0);
+        memcpy(g_login, saved, sizeof saved);
+    }
     close(fds[0]); close(fds[1]);
     g_klog_read = g_klog_write = -1;
 }
