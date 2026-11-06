@@ -227,7 +227,9 @@ The web page (`web/index.html`) and the icon are embedded in the ELF; `make` reg
 
 ## Known limits
 
-- **Rumble from games is not passed to the controller.** Only the 500 ms test from the web page rumbles.
+- Classic two-motor game rumble is forwarded when the optional `scePadVirtualDeviceGetRemoteSetting` API provides it (the PS4-game path). **PS5 haptic audio and adaptive triggers are not bridged.** This implementation is host-tested only; firmware/game compatibility still needs console verification.
+- Game feedback is sampled at most every 16 ms; Switch output remains paced at 60 ms, so very short changes may be coalesced. Missing feedback expires after 500 ms. A failed feedback read disables that device's game feedback until reconnection, while input stays active. The web rumble test takes priority temporarily, then restores current game rumble. The log records API availability, the first non-zero game feedback and read failures.
+- The Switch Pro (`057e:2009`) web rumble test uses rate-limited output after initialization, with bounded stop attempts. This path is host-tested only; compatible third-party pads still need hardware verification. A successful response means the pulse was queued, not that the physical controller confirmed it. Lost stop packets or a stalled payload can still delay stopping.
 - Joy-Con are not combined into a single controller.
 - Up to four bridged controllers.
 - Controllers marked 🧪 and the rest-mode feature still need confirmation on real hardware.

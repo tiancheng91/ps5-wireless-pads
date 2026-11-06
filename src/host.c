@@ -88,6 +88,8 @@ void link_free(host_t *h, link_t *l)
     memset(l, 0, sizeof *l);
 }
 
+static int send_output(host_t *h, link_t *l);
+
 void link_disconnect(host_t *h, link_t *l, const char *why)
 {
     unsigned char p[3];
@@ -99,6 +101,12 @@ void link_disconnect(host_t *h, link_t *l, const char *why)
         return;
     }
     if (l->disconnecting) return;
+    if (l->ready && l->prof->rumble_refresh_ms && (l->out.strong || l->out.weak)) {
+        l->out.strong = l->out.weak = 0;
+        l->rumble_until = 0;
+        /* Best effort only: never delay a disconnect to finish rumbling. */
+        if (now_ms() - l->t_out >= l->prof->rumble_refresh_ms) send_output(h, l);
+    }
     log_line("pad %s: disconnecting (%s)", addr_str(l->addr), why);
     put16(p, l->handle);
     p[2] = 0x13;                        /* remote user terminated */
@@ -738,6 +746,25 @@ static int send_output(host_t *h, link_t *l)
     return send_report(h, l, buf, n);
 }
 
+static int set_rumble(host_t *h, link_t *l, uint8_t strong, uint8_t weak)
+{
+    int changed = l->out.strong != strong || l->out.weak != weak;
+    int sent;
+
+    l->out.strong = strong;
+    l->out.weak = weak;
+    /* Xbox can stop on the device too if feedback or the payload disappears. */
+    l->out.pulse_10ms = strong || weak ? 60 : 0;
+    if (!changed) return 1;
+    if (l->prof->rumble_refresh_ms) {
+        l->rumble_stop_left = strong || weak ? 0 : 5;
+        return 1;
+    }
+    sent = send_output(h, l);
+    l->rumble_stop_left = !sent && !strong && !weak ? 4 : 0;
+    return sent;
+}
+
 static void on_hid(host_t *h, link_t *l, const chan *c, const unsigned char *d, int len)
 {
     if (len < 1) return;
@@ -1224,9 +1251,6 @@ static void link_step(host_t *h, link_t *l, long now)
     }
 
     init_tick(h, l, now);
-    if (l->prof->rumble_refresh_ms && (l->out.strong || l->out.weak) &&
-        now - l->t_out >= l->prof->rumble_refresh_ms)
-        send_output(h, l);
 }
 
 /* ---- pumping ---------------------------------------------------------------- */
@@ -1272,16 +1296,36 @@ void host_poll(host_t *h, int timeout_ms)
     pump(h, timeout_ms);
     now = now_ms();
     for (i = 0; i < HOST_MAX_PADS; i++) {
+        link_t *l = &h->links[i];
+        int interval;
+
         if (!h->links[i].used) continue;
-        link_step(h, &h->links[i], now);
-        if (h->links[i].used && h->links[i].rumble_until && now >= h->links[i].rumble_until) {
-            link_t *l = &h->links[i];
-            l->rumble_until = 0;
-            l->out.strong = l->out.weak = 0;
-            send_output(h, l);
+        link_step(h, l, now);
+        if (l->used && l->pairing && !l->ready && !l->le) linking = 1;
+        if (!l->used || !l->ready || l->disconnecting) continue;
+        interval = l->prof->rumble_refresh_ms;
+        if (l->game_until && now >= l->game_until) {
+            l->game_until = 0;
+            l->game_strong = l->game_weak = 0;
+            if (!l->rumble_until) set_rumble(h, l, 0, 0);
         }
-        if (h->links[i].used && h->links[i].pairing && !h->links[i].ready &&
-            !h->links[i].le) linking = 1;
+        if (l->rumble_until && now >= l->rumble_until) {
+            l->rumble_until = 0;
+            set_rumble(h, l, l->game_strong, l->game_weak);
+        }
+        if (interval && l->init_done && now - l->t_init >= interval &&
+            now - l->t_out >= interval &&
+            (l->out.strong || l->out.weak || l->rumble_stop_left)) {
+            send_output(h, l);
+            /* Count failed attempts too: a bad device must not retry forever. */
+            if (!l->out.strong && !l->out.weak && l->rumble_stop_left) l->rumble_stop_left--;
+        }
+        if (!interval && l->game_until && !l->rumble_until && now - l->t_out >= 250)
+            send_output(h, l);
+        if (!interval && l->rumble_stop_left && now - l->t_out >= 60) {
+            if (send_output(h, l)) l->rumble_stop_left = 0;
+            else l->rumble_stop_left--;
+        }
     }
     le_poll(h, now);
 
@@ -1315,34 +1359,72 @@ int host_pair(host_t *h, int seconds)
     return 1;
 }
 
+int host_output_ready(const host_t *h, int slot)
+{
+    const link_t *l;
+
+    if (!h || !host_connected(h, slot)) return 0;
+    l = &h->links[slot];
+    return !l->disconnecting && l->prof->build_output &&
+           (!l->prof->rumble_refresh_ms || l->init_done);
+}
+
 int host_set_output(host_t *h, int slot, const pad_output *out)
 {
     link_t *l;
 
-    if (slot < 0 || slot >= HOST_MAX_PADS) return 0;
+    if (!host_output_ready(h, slot)) return 0;
     l = &h->links[slot];
-    if (!l->used || !l->ready) return 0;
+    l->game_until = 0;
+    l->game_strong = l->game_weak = 0;
+    l->rumble_stop_left = 0;
     l->out = *out;
+    if (l->prof->rumble_refresh_ms) {
+        l->rumble_until = 0;
+        l->rumble_stop_left = out->strong || out->weak ? 0 : 5;
+        return 1;
+    }
     return send_output(h, l);
+}
+
+int host_rumble_feedback(host_t *h, int slot, uint8_t strong, uint8_t weak)
+{
+    link_t *l;
+
+    if (!host_output_ready(h, slot)) return 0;
+    l = &h->links[slot];
+    l->game_strong = strong;
+    l->game_weak = weak;
+    l->game_until = strong || weak ? now_ms() + 500 : 0;
+    if (l->rumble_until) return 1;
+    return set_rumble(h, l, strong, weak);
 }
 
 int host_rumble_pulse(host_t *h, int slot, int ms)
 {
     link_t *l;
+    pad_output previous;
 
-    if (slot < 0 || slot >= HOST_MAX_PADS) return 0;
+    if (!host_output_ready(h, slot)) return 0;
     l = &h->links[slot];
-    if (!l->used || !l->ready) return 0;
     if (ms < 100) ms = 100;
     if (ms > 2000) ms = 2000;
+    previous = l->out;
     l->out.strong = 200;
     l->out.weak = 200;
     l->out.pulse_10ms = (uint8_t)(ms / 10 + 5);     /* the stop report ends it first */
+    if (l->prof->rumble_refresh_ms) {
+        l->out.pulse_10ms = 0;          /* Switch has no device-side pulse timer. */
+        l->rumble_stop_left = 0;
+        l->rumble_until = now_ms() + ms;
+        log_line("pad %s: rumble test queued for %d ms", addr_str(l->addr), ms);
+        return 1;
+    }
     if (!send_output(h, l)) {
-        l->out.strong = l->out.weak = 0;
-        l->out.pulse_10ms = 0;
+        l->out = previous;              /* A failed test must not hide active game rumble. */
         return 0;
     }
+    l->rumble_stop_left = 0;
     l->out.pulse_10ms = 0;
     l->rumble_until = now_ms() + ms;
     log_line("pad %s: rumble test for %d ms", addr_str(l->addr), ms);

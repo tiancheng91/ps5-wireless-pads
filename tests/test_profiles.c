@@ -114,7 +114,8 @@ static void test_model_names(void)
     CHECK(strcmp(pad_display_name(0x2DC8, 0x6006, "Generic HID"), "8BitDo Pro 2") == 0);
     CHECK(strcmp(pad_display_name(0x045E, 0x0B12, "Xbox"), "Xbox Series X|S") == 0);
     CHECK(profile_find(0x045E, 0x0B12) == profile_find(0x045E, 0x0B13));
-    CHECK(profile_find(0x057E, 0x201E) == profile_find(0x057E, 0x2009));
+    CHECK(profile_find(0x057E, 0x201E)->parse == profile_find(0x057E, 0x2009)->parse);
+    CHECK(!profile_find(0x057E, 0x201E)->build_output);
     CHECK(strcmp(pad_display_name(0x1234, 0x5678, "Xbox"), "Xbox") == 0);              /* profile */
     CHECK(strcmp(pad_display_name(0x1234, 0x5678, "Generic HID"), "Controller") == 0);
     CHECK(strcmp(pad_display_name(0, 0, NULL), "Controller") == 0);
@@ -257,6 +258,41 @@ static void test_switch(void)
         if (step == 3) CHECK(out[10] == 0x30 && out[11] == 0x02);       /* player 2 LED */
     }
     CHECK(step == 4);
+
+    printf("Switch Pro rumble: neutral, separate motors, amplitude and shared counter\n");
+    CHECK(p->build_output != NULL && p->rumble_refresh_ms == 60);
+    CHECK(!profile_find(0x057E, 0x2017)->build_output);
+    CHECK(!profile_find(0x057E, 0x2019)->build_output);
+    {
+        static const unsigned char neutral[8] = { 0, 1, 0x40, 0x40, 0, 1, 0x40, 0x40 };
+        static const unsigned char full[4] = { 0, 0xC9, 0x40, 0x72 };
+        int value, prev = 0;
+
+        o.strong = o.weak = 0;
+        CHECK(p->build_output(ctx, &o, out, 9) == 0);
+        CHECK(p->build_output(ctx, &o, out, sizeof out) == 10);
+        CHECK(out[0] == 0x10 && out[1] == 4);
+        CHECK(memcmp(out + 2, neutral, sizeof neutral) == 0);
+        o.strong = 255;
+        CHECK(p->build_output(ctx, &o, out, sizeof out) == 10);
+        CHECK(memcmp(out + 2, full, sizeof full) == 0);
+        CHECK(memcmp(out + 6, neutral, 4) == 0);
+        o.strong = 0;
+        o.weak = 255;
+        CHECK(p->build_output(ctx, &o, out, sizeof out) == 10);
+        CHECK(memcmp(out + 2, neutral, 4) == 0);
+        CHECK(memcmp(out + 6, full, sizeof full) == 0);
+        for (value = 0; value <= 255; value++) {
+            o.strong = (uint8_t)value;
+            CHECK(p->build_output(ctx, &o, out, sizeof out) == 10);
+            CHECK(out[1] < 16 && out[3] >= prev && out[3] <= 0xC9);
+            CHECK(out[4] == 0x40 || out[4] == 0xC0);
+            CHECK(out[5] >= 0x40 && out[5] <= 0x72);
+            prev = out[3];
+        }
+        CHECK(p->init_report(ctx, 0, &o, out, sizeof out) == 12);
+        CHECK(out[1] == 7); /* short buffer did not consume a counter */
+    }
 }
 
 /* A typical Bluetooth gamepad descriptor: report 1 with X, Y, Z, Rz

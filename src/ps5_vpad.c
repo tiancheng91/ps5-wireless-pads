@@ -85,6 +85,7 @@ int32_t  kernel_get_ucred_caps(pid_t pid, uint8_t caps[16]);
 int32_t  kernel_set_ucred_caps(pid_t pid, const uint8_t caps[16]);
 
 typedef int32_t (*mbus_bind_fn)(uint64_t device_id, int32_t user);
+typedef int32_t (*remote_setting_fn)(int32_t handle, void *setting);
 
 typedef struct {
     char reserved[45];
@@ -109,9 +110,13 @@ typedef struct {
     pad_state last;             /* the pad's latest state, resent while PS is held from the menu */
     long ps_until;              /* ms; PS is added to the frames until then (0: not held) */
     int ps_active;              /* a frame with PS went out and the release is still to be sent */
+    long feedback_at;
+    int feedback_failed;
+    int feedback_seen;
 } vslot;
 
 static mbus_bind_fn g_bind;
+static remote_setting_fn g_remote_setting;  /* optional: never required for input */
 static int g_ready;                         /* vpad_init succeeded */
 static int32_t g_user = -1;
 static vslot g_slot[HOST_MAX_PADS];
@@ -416,6 +421,10 @@ int vpad_init(void)
         log_line("vpad: scePadSetProcessPrivilege answered %#x, carrying on", (unsigned)r);
     g_user = main_user();
     log_line("vpad: main user %#x", (unsigned)g_user);
+    lib = dlopen("/system/common/lib/libScePad.sprx", RTLD_NOW | RTLD_GLOBAL);
+    if (!lib) lib = dlopen("libScePad.sprx", RTLD_NOW | RTLD_GLOBAL);
+    g_remote_setting = lib ? (remote_setting_fn)dlsym(lib, "scePadVirtualDeviceGetRemoteSetting") : NULL;
+    log_line("vpad: game rumble feedback %s", g_remote_setting ? "available" : "unavailable (input unaffected)");
     g_ready = 1;
     return 1;
 }
@@ -529,6 +538,35 @@ void vpad_poll(long now)
 int vpad_live(int slot)
 {
     return slot >= 0 && slot < HOST_MAX_PADS && g_slot[slot].st == VP_READY;
+}
+
+int vpad_read_rumble(int slot, long now, uint8_t *strong, uint8_t *weak)
+{
+    /* Reverse-engineered remote-setting layout used by sub0x00001/padbridge
+     * on PS5 and MoHadiShibli/Control4Free on PS4. Keep their 256-byte buffer;
+     * only decode the confirmed classic motor bytes, never haptic audio. */
+    union { uint64_t align; uint8_t bytes[256]; } setting = {0};
+    vslot *v;
+    int32_t r;
+
+    if (!strong || !weak || !g_remote_setting || !vpad_live(slot)) return 0;
+    v = &g_slot[slot];
+    if (v->feedback_failed || now - v->feedback_at < 16) return 0;
+    v->feedback_at = now;
+    r = g_remote_setting(v->handle, setting.bytes);
+    if (r != 0) {
+        v->feedback_failed = 1; /* Stop querying until this virtual device is recreated. */
+        log_line("slot %d: game rumble feedback failed: %#x (input unaffected)", slot, (unsigned)r);
+        return 0;
+    }
+    /* Update flags can be transient; the current motor values are what matter. */
+    *strong = setting.bytes[3];
+    *weak = setting.bytes[4];
+    if (!v->feedback_seen && (*strong || *weak)) {
+        v->feedback_seen = 1;
+        log_line("slot %d: first non-zero game rumble feedback received", slot);
+    }
+    return 1;
 }
 
 /* One frame to the virtual pad: the pad's state, with PS added while the menu

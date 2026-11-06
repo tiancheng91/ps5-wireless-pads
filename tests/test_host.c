@@ -133,6 +133,44 @@ static int test_pairing_seed(int drop_every, unsigned seed, int quiet)
                                       (uint32_t)out[77] << 16 | (uint32_t)out[78] << 24));
     }
 
+    if (!drop_every && !quiet) {
+        int before;
+
+        printf("DS4 game feedback: preserve colours and bound failed stop attempts\n");
+        CHECK(host_rumble_feedback(h, s.slot, 180, 90));
+        n = sim_last_output(sim, out, sizeof out);
+        CHECK(n == 79 && out[7] == 90 && out[8] == 180);
+        CHECK(out[9] == 1 && out[10] == 2 && out[11] == 3);
+        sim_fail_outputs(sim, 1);
+        CHECK(!host_rumble_pulse(h, s.slot, 500));
+        sim_fail_outputs(sim, 1);
+        before = sim_output_attempts(sim);
+        CHECK(!host_rumble_feedback(h, s.slot, 0, 0));
+        run(h, 200);
+        CHECK(sim_output_attempts(sim) == before + 2);
+        CHECK(sim_last_output(sim, out, sizeof out) == 79);
+        CHECK(out[7] == 0 && out[8] == 0);
+        CHECK(host_rumble_feedback(h, s.slot, 180, 90));
+        sim_fail_outputs(sim, 1);
+        CHECK(!host_rumble_feedback(h, s.slot, 0, 0));
+        CHECK(host_rumble_pulse(h, s.slot, 500));
+        before = sim_output_attempts(sim);
+        run(h, 200);
+        CHECK(sim_output_attempts(sim) == before); /* Old stop retries cannot restart a test pulse. */
+        run(h, 400);
+        CHECK(host_rumble_feedback(h, s.slot, 180, 90));
+        sim_fail_outputs(sim, 100);
+        before = sim_output_attempts(sim);
+        CHECK(!host_rumble_feedback(h, s.slot, 0, 0));
+        run(h, 1000);
+        CHECK(sim_output_attempts(sim) == before + 5);
+        run(h, 1000);
+        CHECK(sim_output_attempts(sim) == before + 5);
+        sim_fail_outputs(sim, 0);
+        CHECK(host_rumble_feedback(h, s.slot, 10, 10));
+        CHECK(host_rumble_feedback(h, s.slot, 0, 0));
+    }
+
     /* Input changes are followed. */
     pad.report[7] = 0x08 | 0x10;            /* square, hat centred */
     sim_set_report(sim, pad.report, pad.report_len);
@@ -334,6 +372,7 @@ static void test_generic_pad(void)
     run(h, 10000);
     CHECK(s.connects == 1);
     CHECK(s.info.profile && strcmp(s.info.profile, "Generic HID") == 0);
+    CHECK(!host_output_ready(h, s.slot));
     CHECK(sim_sdp_continuations(sim) >= 1);     /* the descriptor came in pieces */
     CHECK(s.states > 0);
     CHECK(s.last.lx == 255 && s.last.ly == 128);
@@ -373,12 +412,116 @@ static void test_switch_pad(void)
     sim = sim_new(&pad);
     h = open_host(sim, &s);
     host_pair(h, 30);
+    {
+        long until = sim_now() + 10000;
+        while (!s.connects && sim_now() < until) host_poll(h, 5);
+        CHECK(s.connects == 1);
+        CHECK(!host_output_ready(h, s.slot));
+        CHECK(!host_rumble_pulse(h, s.slot, 500)); /* Initialization owns output. */
+    }
     run(h, 10000);
     CHECK(s.connects == 1);
     CHECK(s.info.profile && strcmp(s.info.profile, "Switch Pro") == 0);
     CHECK(sim_outputs(sim) >= 4);           /* the whole wake-up sequence */
     CHECK(s.last.buttons & 0x2000);         /* A, from the full report: circle */
     CHECK(s.last.lx == 128 && s.last.ly == 128);
+    {
+        static const unsigned char neutral[8] = { 0, 1, 0x40, 0x40, 0, 1, 0x40, 0x40 };
+        unsigned char out[128];
+        int before, states_before = s.states, i;
+        pad_output stopped = {0};
+
+        printf("Switch rumble: queued, rate-limited, stops and keeps input flowing\n");
+        CHECK(host_output_ready(h, s.slot));
+        before = sim_outputs(sim);
+        for (i = 0; i < 100; i++) CHECK(host_rumble_pulse(h, s.slot, 500));
+        CHECK(sim_outputs(sim) == before); /* API calls never send in a burst. */
+        run(h, 100);
+        CHECK(sim_outputs(sim) > before && sim_outputs(sim) <= before + 2);
+        CHECK(sim_last_output(sim, out, sizeof out) == 11);
+        CHECK(out[0] == 0xA2 && out[1] == 0x10);
+        CHECK(memcmp(out + 3, neutral, sizeof neutral) != 0);
+        run(h, 800);
+        CHECK(sim_last_output(sim, out, sizeof out) == 11);
+        CHECK(memcmp(out + 3, neutral, sizeof neutral) == 0);
+        CHECK(s.states > states_before && (s.last.buttons & PAD_CIRCLE));
+        CHECK(sim_output_min_gap(sim) >= 60);
+        before = sim_output_attempts(sim);
+        run(h, 500);
+        CHECK(sim_output_attempts(sim) == before); /* No idle rumble traffic. */
+
+        printf("Switch rumble: retry a lost stop, bound permanent failures\n");
+        CHECK(host_rumble_pulse(h, s.slot, 100));
+        run(h, 70);
+        sim_fail_outputs(sim, 1);
+        run(h, 500);
+        CHECK(sim_last_output(sim, out, sizeof out) == 11);
+        CHECK(memcmp(out + 3, neutral, sizeof neutral) == 0);
+
+        CHECK(host_rumble_pulse(h, s.slot, 100));
+        run(h, 70);
+        sim_fail_outputs(sim, 100);
+        before = sim_output_attempts(sim);
+        run(h, 1000);
+        CHECK(sim_output_attempts(sim) == before + 5);
+        CHECK(sim_output_min_gap(sim) >= 60);
+        CHECK(host_connected(h, s.slot)); /* Output failure does not drop input. */
+        before = sim_output_attempts(sim);
+        run(h, 1000);
+        CHECK(sim_output_attempts(sim) == before);
+        sim_fail_outputs(sim, 0);
+        CHECK(host_set_output(h, s.slot, &stopped));
+        run(h, 400);
+        CHECK(sim_last_output(sim, out, sizeof out) == 11);
+        CHECK(memcmp(out + 3, neutral, sizeof neutral) == 0);
+
+        printf("game rumble: renew unchanged values, expire stale feedback, preserve web tests\n");
+        {
+            static const unsigned char motors[8] = { 0, 0x49, 0x40, 0x52, 0, 0x25, 0x40, 0x49 };
+            CHECK(!host_rumble_feedback(NULL, s.slot, 64, 32));
+            CHECK(!host_rumble_feedback(h, -1, 64, 32));
+            for (i = 0; i < 10; i++) {
+                CHECK(host_rumble_feedback(h, s.slot, 64, 32));
+                run(h, 100);
+            }
+            CHECK(sim_last_output(sim, out, sizeof out) == 11);
+            CHECK(memcmp(out + 3, motors, sizeof motors) == 0);
+            CHECK(sim_output_min_gap(sim) >= 60);
+            before = sim_output_attempts(sim);
+            for (i = 0; i < 30; i++) {
+                CHECK(host_rumble_feedback(h, s.slot, 0, 0));
+                run(h, 20);
+            }
+            CHECK(sim_output_attempts(sim) == before + 5); /* Zeros do not restart stop retries. */
+            CHECK(sim_last_output(sim, out, sizeof out) == 11);
+            CHECK(memcmp(out + 3, neutral, sizeof neutral) == 0);
+            CHECK(host_rumble_feedback(h, s.slot, 64, 32));
+            run(h, 1000); /* Reader failure: no renewals, so rumble stops. */
+            CHECK(sim_last_output(sim, out, sizeof out) == 11);
+            CHECK(memcmp(out + 3, neutral, sizeof neutral) == 0);
+            CHECK(host_connected(h, s.slot));
+
+            CHECK(host_rumble_pulse(h, s.slot, 500));
+            CHECK(host_rumble_feedback(h, s.slot, 0, 0));
+            run(h, 100);
+            CHECK(sim_last_output(sim, out, sizeof out) == 11);
+            CHECK(memcmp(out + 3, neutral, sizeof neutral) != 0); /* Game zero did not cancel test. */
+            for (i = 0; i < 5; i++) {
+                CHECK(host_rumble_feedback(h, s.slot, 64, 32));
+                run(h, 100);
+            }
+            CHECK(sim_last_output(sim, out, sizeof out) == 11);
+            CHECK(memcmp(out + 3, motors, sizeof motors) == 0); /* Resume latest game values. */
+            CHECK(sim_output_min_gap(sim) >= 60);
+        }
+        sim_disconnect(sim);
+        run(h, 100);
+        before = sim_output_attempts(sim);
+        CHECK(!host_rumble_pulse(h, s.slot, 500));
+        CHECK(!host_rumble_feedback(h, s.slot, 64, 32));
+        run(h, 500);
+        CHECK(sim_output_attempts(sim) == before);
+    }
     host_close(h);
     sim_free(sim);
 }

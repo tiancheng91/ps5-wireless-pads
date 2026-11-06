@@ -380,6 +380,9 @@ static int xbox_output(void *ctx, const pad_output *o, uint8_t *b, int max)
 
 static const uint16_t switch_ids[][2] = {
     { 0x057E, 0x2009 },     /* Switch Pro Controller, and pads emulating it */
+};
+
+static const uint16_t switch_online_ids[][2] = {
     { 0x057E, 0x2017 },     /* SNES Online */
     { 0x057E, 0x2019 },     /* N64 Online */
     { 0x057E, 0x201A },     /* Mega Drive Online */
@@ -389,6 +392,43 @@ static const uint16_t switch_ids[][2] = {
 typedef struct {
     uint8_t counter;
 } switch_ctx;
+
+/* Protocol amplitude levels (milli-units), from dekuNukem's rumble data:
+ * github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/rumble_data_table.md
+ * Also used by Linux hid-nintendo. Fixed 160/320 Hz avoids libm and
+ * keeps the encoded amplitude at or below the normal 1.003 maximum. */
+static void switch_motor(uint8_t strength, uint8_t b[4])
+{
+    static const uint16_t amplitudes[] = {
+        0, 8, 12, 14, 17, 20, 24, 28, 33, 40, 47, 56, 67, 80, 95, 112,
+        117, 123, 128, 134, 140, 146, 152, 159, 166, 173, 181, 189, 198, 206,
+        215, 225, 230, 235, 240, 245, 251, 256, 262, 268, 273, 279, 286, 292,
+        298, 305, 311, 318, 325, 332, 340, 347, 355, 362, 370, 378, 387, 395,
+        404, 413, 422, 431, 440, 450, 460, 470, 480, 491, 501, 512, 524, 535,
+        547, 559, 571, 584, 596, 609, 623, 636, 650, 665, 679, 694, 709, 725,
+        741, 757, 773, 790, 808, 825, 843, 862, 881, 900, 920, 940, 960, 981, 1003,
+    };
+    unsigned amplitude = strength * 1000u / 255u;
+    unsigned i = 0;
+
+    while (i + 1 < sizeof amplitudes / sizeof amplitudes[0] && amplitudes[i] < amplitude) i++;
+    b[0] = 0x00;                             /* 320 Hz high band */
+    b[1] = (uint8_t)(0x01 + 2 * i);
+    b[2] = (uint8_t)(0x40 + ((i & 1) << 7)); /* 160 Hz low band */
+    b[3] = (uint8_t)(0x40 + (i >> 1));
+}
+
+static int switch_output(void *ctx, const pad_output *o, uint8_t *b, int max)
+{
+    switch_ctx *c = ctx;
+
+    if (max < 10) return 0;
+    b[0] = 0x10;
+    b[1] = c->counter++ & 0x0F;
+    switch_motor(o->strong, b + 2);           /* left actuator */
+    switch_motor(o->weak, b + 6);             /* right actuator */
+    return 10;
+}
 
 /* Stick travel from centre the raw values usually reach; factory
  * calibration (SPI flash) is not read yet. */
@@ -525,7 +565,8 @@ static const pad_profile k_profiles[] = {
     { "DualShock 4", IDS(ds4_ids),    ds4_parse,    ds4_output,  ds4_init,    1, 0, NULL },
     { "DualSense",   IDS(ds5_ids),    ds5_parse,    ds5_output,  ds5_init,    1, 0, NULL },
     { "Xbox",        IDS(xbox_ids),   xbox_parse,   xbox_output, NULL,        0, 0, xbox_setup },
-    { "Switch Pro",  IDS(switch_ids), switch_parse, NULL,        switch_init, 1, 0, NULL },
+    { "Switch Pro",  IDS(switch_ids), switch_parse, switch_output, switch_init, 1, 60, NULL },
+    { "Switch Pro",  IDS(switch_online_ids), switch_parse, NULL, switch_init, 1, 0, NULL },
 };
 
 const pad_profile *profile_find(uint16_t vid, uint16_t pid)

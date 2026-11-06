@@ -139,6 +139,27 @@ static void test_xbox_sc(void)
         CHECK(!host_rumble_pulse(h, s.slot + 1, 500));
     }
 
+    {
+        int before = sim_le_outputs(sim);
+
+        printf("game rumble: Xbox device-side timeout, renewal and stale-feedback stop\n");
+        CHECK(host_rumble_feedback(h, s.slot, 255, 51));
+        CHECK(sim_le_outputs(sim) == before + 1);
+        CHECK(sim_le_last_output(sim, out, sizeof out) == 8);
+        CHECK(out[3] == 100 && out[4] == 20 && out[5] == 60 && out[7] == 0);
+        run(h, 200);
+        CHECK(sim_le_outputs(sim) == before + 1);
+        CHECK(host_rumble_feedback(h, s.slot, 255, 51));
+        CHECK(sim_le_outputs(sim) == before + 1); /* No duplicate immediate send. */
+        run(h, 100);
+        CHECK(sim_le_outputs(sim) == before + 2);
+        run(h, 800);
+        CHECK(sim_le_last_output(sim, out, sizeof out) == 8);
+        CHECK(out[3] == 0 && out[4] == 0);
+        before = sim_le_outputs(sim);
+        run(h, 1000);
+        CHECK(sim_le_outputs(sim) == before);
+    }
     sim_le_power_off(sim);
     run(h, 200);
     CHECK(s.disconnects == 1);

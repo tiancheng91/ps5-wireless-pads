@@ -176,6 +176,18 @@ static void on_state(void *ud, int slot, const pad_state *st)
     vpad_update(slot, st);
 }
 
+static void poll_game_rumble(long now)
+{
+    int slot;
+
+    if (!g_host || !g_vpad_ok) return;
+    for (slot = 0; slot < HOST_MAX_PADS; slot++) {
+        uint8_t strong, weak;
+        if (host_output_ready(g_host, slot) && vpad_read_rumble(slot, now, &strong, &weak))
+            host_rumble_feedback(g_host, slot, strong, weak);
+    }
+}
+
 /* The menu's PS button: the same as holding PS on that pad. */
 #define PS_HOLD_MS 700
 static int web_press_ps(int slot)
@@ -433,6 +445,7 @@ int main(void)
                 continue;
             }
         }
+        poll_game_rumble(now);
         if (!g_web && g_web_tries > 0 && now >= g_web_next) web_open(now);
 
         /* The Bluetooth: tries, loss, and the menu's retry button. */

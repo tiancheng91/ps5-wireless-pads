@@ -41,8 +41,9 @@ typedef struct pad_profile {
     /* Repeat the wake-up sequence until parse() returns PARSE_FULL. */
     int needs_full;
 
-    /* Resend a non-zero rumble this often (ms), for pads whose rumble
-     * stops by itself. 0: never. */
+    /* Non-zero: schedule rumble at this minimum interval (ms), refresh it
+     * while active, and repeat stop reports a bounded number of times.
+     * Output waits for initialization to finish. 0: send immediately. */
     int rumble_refresh_ms;
 
     /* Prepares ctx for the exact model, when the profile covers several

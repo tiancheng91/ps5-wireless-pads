@@ -57,7 +57,12 @@ Bluetooth LE models need Secure Connections pairing; whether the PS5's chip supp
 | `057e:201a` | Nintendo Switch Online Mega Drive / Genesis controller | 🧪 |
 | `057e:201e` | Nintendo Switch Online Mega Drive / Genesis controller (2nd id) | 🧪 |
 
-Rumble is not done yet for these.
+The web rumble test is implemented for `057e:2009` (Switch Pro and compatible
+pads), with host tests only; real hardware and third-party compatibility still
+need verification. Switch Online models above keep their existing input-only
+support. Classic two-motor game feedback is also forwarded when the optional
+virtual-pad API supplies it; the PS4-game path is the initial target. PS5 haptic
+audio is not converted. This implementation still needs console verification.
 
 ## Third-party pads with a built-in mapping
 

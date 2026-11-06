@@ -6,9 +6,12 @@
 
 
 #include <stdint.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/types.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 static int g_fail;
@@ -22,6 +25,25 @@ static uint8_t g_caps[16];
 
 static long g_now = 100000;
 static long fake_clock(void) { return g_now; }
+static int g_klog_read = -1, g_klog_write = -1, g_device;
+static int g_insert_calls, g_remote_calls, g_remote_available = 1;
+static int32_t g_remote_result, g_remote_handle;
+static uint8_t g_remote_strong, g_remote_weak;
+
+int connect(int fd, const struct sockaddr *address, socklen_t length)
+{
+    (void)fd; (void)address; (void)length;
+    errno = ECONNREFUSED; /* Keep tests away from any real local log server. */
+    return -1;
+}
+
+int open(const char *path, int flags, ...)
+{
+    (void)flags;
+    if (strcmp(path, "/dev/klog") == 0 && g_klog_read >= 0) return dup(g_klog_read);
+    errno = ENOENT;
+    return -1;
+}
 
 static void note(char c) { size_t n = strlen(g_calls); if (n < sizeof g_calls - 1) g_calls[n] = c; }
 
@@ -70,8 +92,18 @@ int32_t scePadReadState(int32_t h, void *d)
     p[76] = (unsigned char)g_pad_connected;
     return 0;
 }
-int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t) { (void)p; (void)t; return 0; }
-int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; return 0; }
+int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t)
+{
+    char line[160];
+    int n;
+    (void)p; (void)t;
+    n = snprintf(line, sizeof line,
+                 "SCE_MBUS_EVENT_DEVICE_ADDED [DeviceId:0x%x][type:1][subType:22][capabilityBattery:0]\n",
+                 0x10000 + ++g_device);
+    if (g_klog_write >= 0) CHECK(write(g_klog_write, line, (size_t)n) == n);
+    return 0;
+}
+int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; g_insert_calls++; return 0; }
 int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { (void)h; return 0; }
 uint64_t kernel_get_ucred_authid(pid_t pid) { (void)pid; return g_authid; }
 int32_t kernel_set_ucred_authid(pid_t pid, uint64_t a) { (void)pid; g_authid = a; return 0; }
@@ -80,8 +112,24 @@ int32_t kernel_set_ucred_caps(pid_t pid, const uint8_t c[16]) { (void)pid; memcp
 int sceKernelSendNotificationRequest(int a, void *r, size_t n, int b) { (void)a; (void)r; (void)n; (void)b; return 0; }
 
 static int32_t fake_bind(uint64_t d, int32_t u) { (void)d; (void)u; return 0; }
+static int32_t fake_remote(int32_t handle, void *setting)
+{
+    uint8_t *bytes = setting;
+    g_remote_calls++;
+    g_remote_handle = handle;
+    memset(bytes, 0, 256);
+    bytes[3] = g_remote_strong;
+    bytes[4] = g_remote_weak;
+    return g_remote_result;
+}
 void *dlopen(const char *path, int mode) { (void)path; (void)mode; return (void *)1; }
-void *dlsym(void *h, const char *name) { (void)h; (void)name; return (void *)fake_bind; }
+void *dlsym(void *h, const char *name)
+{
+    (void)h;
+    if (strcmp(name, "scePadVirtualDeviceGetRemoteSetting") == 0)
+        return g_remote_available ? (void *)fake_remote : NULL;
+    return (void *)fake_bind;
+}
 
 static void reset(int init_result, int priv_after_init)
 {
@@ -89,6 +137,71 @@ static void reset(int init_result, int priv_after_init)
     g_inited = 0;
     g_init_result = init_result;
     g_priv_result_after_init = priv_after_init;
+}
+
+static void create_virtual(int slot)
+{
+    CHECK(vpad_add(slot));
+    vpad_poll(g_now);
+    g_now++;
+    vpad_poll(g_now);           /* consume DEVICE_ADDED, then watch for ambiguity */
+    g_now += 301;
+    vpad_poll(g_now);
+    CHECK(vpad_live(slot));
+}
+
+static void test_feedback(void)
+{
+    int fds[2], before;
+    uint8_t strong = 0, weak = 0;
+    pad_state st;
+
+    printf("game feedback: only live virtual devices, pacing, failure isolation and reconnect\n");
+    ph_clock_hook = fake_clock;
+    reset(0, 0);
+    CHECK(vpad_init());
+    CHECK(!vpad_read_rumble(-1, g_now, &strong, &weak));
+    CHECK(!vpad_read_rumble(0, g_now, &strong, &weak));
+    CHECK(g_remote_calls == 0);
+    if (pipe(fds) != 0) { CHECK(0); return; }
+    g_klog_read = fds[0]; g_klog_write = fds[1];
+    CHECK(fcntl(fds[0], F_SETFL, O_NONBLOCK) == 0);
+    create_virtual(0);
+    g_remote_strong = 200; g_remote_weak = 70;
+    CHECK(vpad_read_rumble(0, g_now, &strong, &weak));
+    CHECK(strong == 200 && weak == 70 && g_remote_handle == 0x10001);
+    CHECK(!vpad_read_rumble(0, g_now + 15, &strong, &weak));
+    CHECK(g_remote_calls == 1);
+    g_now += 16;
+    g_remote_strong = g_remote_weak = 0;
+    CHECK(vpad_read_rumble(0, g_now, &strong, &weak));
+    CHECK(!strong && !weak); /* Current values matter even when update flags are 0. */
+    g_now += 16;
+    g_remote_result = -1;
+    CHECK(!vpad_read_rumble(0, g_now, &strong, &weak));
+    before = g_remote_calls;
+    g_now += 1000;
+    CHECK(!vpad_read_rumble(0, g_now, &strong, &weak) && g_remote_calls == before);
+    pad_state_reset(&st);
+    before = g_insert_calls;
+    vpad_update(0, &st);
+    CHECK(vpad_live(0) && g_insert_calls == before + 1);
+    vpad_remove(0);
+    CHECK(!vpad_read_rumble(0, g_now, &strong, &weak));
+    g_remote_result = 0;
+    create_virtual(0);
+    CHECK(vpad_read_rumble(0, g_now, &strong, &weak));
+    CHECK(g_remote_handle == 0x10002);
+    g_remote_available = 0;
+    reset(0, 0);
+    CHECK(vpad_init()); /* Missing optional API never prevents input initialization. */
+    before = g_remote_calls;
+    g_now += 100;
+    CHECK(!vpad_read_rumble(0, g_now, &strong, &weak) && g_remote_calls == before);
+    CHECK(vpad_live(0));
+    vpad_remove(0);
+    close(fds[0]); close(fds[1]);
+    g_klog_read = g_klog_write = -1;
 }
 
 int main(void)
@@ -223,6 +336,7 @@ int main(void)
         CHECK(vpad_choose_user(none, 0x1111, 0x1111, "other") == -1);       /* nobody signed in */
     }
 
+    test_feedback();
     printf(g_fail ? "%d check(s) failed\n" : "all vpad checks passed\n", g_fail);
     return g_fail != 0;
 }

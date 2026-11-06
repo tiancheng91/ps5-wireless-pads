@@ -45,14 +45,22 @@ void host_poll(host_t *h, int timeout_ms);
 /* Searches for pads in pairing mode for `seconds`. */
 int  host_pair(host_t *h, int seconds);
 
-/* Sends rumble and lights to the pad in `slot`. Returns 0 if it is not
- * connected or takes no output. */
+/* Sends rumble and lights to the pad in `slot` (queued for rate-limited
+ * profiles). Returns 0 if unavailable, still initializing or unsupported. */
 int  host_set_output(host_t *h, int slot, const pad_output *out);
 
 /* Rumbles the pad in `slot` for `ms` (100..2000) and stops it: a test from
  * the web page. Lights are left as they are. Returns 0 if the slot has no
- * connected pad or the pad takes no output. */
+ * connected pad, it is still initializing or the pad takes no output.
+ * Rate-limited profiles queue the pulse; a return of 1 means accepted. */
 int  host_rumble_pulse(host_t *h, int slot, int ms);
+
+/* Latest game motor values; preserves lights and lets a web test finish first.
+ * Call with every successful feedback sample, including unchanged values.
+ * Non-zero rumble expires after 500 ms without a sample. Returns 0 if unavailable. */
+int host_rumble_feedback(host_t *h, int slot, uint8_t strong, uint8_t weak);
+/* Whether a connected pad is ready for output; avoids querying unsupported pads. */
+int host_output_ready(const host_t *h, int slot);
 
 int  host_connected(const host_t *h, int slot);
 int  host_paired_count(const host_t *h);

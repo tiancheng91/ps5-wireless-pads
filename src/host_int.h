@@ -209,6 +209,9 @@ typedef struct {
     pad_output out;
     long t_out;
     long rumble_until;              /* a test pulse to stop then, 0 if none */
+    int rumble_stop_left;           /* bounded stop attempts for refreshed rumble */
+    uint8_t game_strong, game_weak;
+    long game_until;                /* feedback lease: stop if reads stop arriving */
 
     /* The profile's own memory, and its wake-up sequence. */
     union { unsigned char bytes[PROFILE_CTX_MAX]; uint64_t align; } pctx;

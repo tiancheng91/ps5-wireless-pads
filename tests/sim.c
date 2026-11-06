@@ -41,6 +41,8 @@ struct sim {
     unsigned drop_count;
     unsigned char last_out[128];
     int last_out_len;
+    int output_attempts, output_failures;
+    long last_output_at, output_min_gap;
     long t_report;
     int deaf;
     int ssp, scan;
@@ -511,6 +513,18 @@ static int op_acl_send(void *ctx, const unsigned char *pkt, int len)
     cid = le16(pkt + 6);
     d = pkt + 8;
 
+    if (cid == RCID_INTR && n >= 2 && d[0] == 0xA2) {
+        long gap = g_clock - s->last_output_at;
+        if (s->output_attempts && (s->output_attempts == 1 || gap < s->output_min_gap))
+            s->output_min_gap = gap;
+        s->last_output_at = g_clock;
+        s->output_attempts++;
+        if (s->output_failures > 0) {
+            s->output_failures--;
+            return 0;
+        }
+    }
+
     ncp[0] = 1;
     put16(ncp + 1, HANDLE);
     put16(ncp + 3, 1);
@@ -688,6 +702,9 @@ int sim_dropped(const sim_t *s) { return s->dropped; }
 int sim_scan(const sim_t *s) { return s->scan; }
 void sim_stale_link(sim_t *s, unsigned handle) { s->stale = handle + 1; }
 int sim_stale_cleared(const sim_t *s) { return s->stale_cleared; }
+int sim_output_attempts(const sim_t *s) { return s->output_attempts; }
+long sim_output_min_gap(const sim_t *s) { return s->output_min_gap; }
+void sim_fail_outputs(sim_t *s, int count) { s->output_failures = count; }
 void sim_set_scan(sim_t *s, int v) { s->scan = v; }
 
 int sim_last_output(const sim_t *s, unsigned char *out, int max)

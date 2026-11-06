@@ -34,6 +34,11 @@ int  vpad_live(int slot);
 
 void vpad_update(int slot, const pad_state *st);
 
+/* Reads classic game rumble on our live virtual device, at most every 16 ms.
+ * Returns 1 with a sample, 0 when unavailable/not due. A failed read disables
+ * feedback for that device's lifetime; input keeps working. No haptic audio. */
+int vpad_read_rumble(int slot, long now, uint8_t *strong, uint8_t *weak);
+
 /* Holds PS on the virtual pad for `ms` milliseconds (the menu's PS button).
  * 0 if the slot has no live virtual pad. */
 int  vpad_press_ps(int slot, int ms);
