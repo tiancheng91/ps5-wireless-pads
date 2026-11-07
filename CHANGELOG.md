@@ -1,3 +1,10 @@
+## 0.2.0-beta-routing-diag2
+
+Adds a default-off virtual controller test panel independent of Bluetooth.
+Uses the existing registration/binding/input path in a dedicated diagnostic slot.
+Web buttons send timed pulses with automatic release and centered sticks.
+Disabling removes the identified test device; suspend and shutdown disable it.
+
 ## 0.2.0-beta-routing-diag1
 
 Diagnostic build based on aa58146, preserving its pairing and user binding.

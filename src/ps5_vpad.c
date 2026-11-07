@@ -100,6 +100,9 @@ int sceKernelSendNotificationRequest(int, notify_request *, size_t, int);
 #define T_AMBIGUITY      300    /* after a match, watch for a second one */
 #define LINE_MAX_LEN    1024
 
+#define TEST_SLOT HOST_MAX_PADS
+#define VPAD_SLOTS (HOST_MAX_PADS + 1)
+
 enum { VP_FREE, VP_QUEUED, VP_PENDING, VP_READY, VP_FAILED };
 
 typedef struct {
@@ -123,8 +126,12 @@ static mbus_bind_fn g_bind;
 static remote_setting_fn g_remote_setting;  /* optional: never required for input */
 static int g_ready;                         /* vpad_init succeeded */
 static int32_t g_user = -1;
-static vslot g_slot[HOST_MAX_PADS];
+static vslot g_slot[VPAD_SLOTS];
 static void ps_tick(long now);
+static void test_tick(long now);
+static int g_test_enabled;
+static long g_test_until, g_test_at;
+static uint32_t g_test_buttons;
 static long g_monitor_until, g_users_at;
 
 /* The identification under way: one at a time, so a DEVICE_ADDED line can
@@ -442,7 +449,7 @@ int vpad_init(void)
 
 int vpad_add(int slot)
 {
-    if (!g_ready || slot < 0 || slot >= HOST_MAX_PADS) return 0;
+    if (!g_ready || slot < 0 || slot >= VPAD_SLOTS) return 0;
     if (g_slot[slot].st != VP_FREE && g_slot[slot].st != VP_FAILED) return 0;
     memset(&g_slot[slot], 0, sizeof g_slot[slot]);
     g_slot[slot].st = VP_QUEUED;
@@ -535,6 +542,7 @@ void vpad_poll(long now)
 
     if (!g_ready) return;
     ps_tick(now);
+    test_tick(now);
     if (g_pending < 0 && g_log_fd >= 0) {
         if (now < g_monitor_until) {
             log_source_read();
@@ -552,7 +560,7 @@ void vpad_poll(long now)
         finish_identification(now);
         return;
     }
-    for (i = 0; i < HOST_MAX_PADS; i++)
+    for (i = 0; i < VPAD_SLOTS; i++)
         if (g_slot[i].st == VP_QUEUED) {
             start_identification(i);
             return;
@@ -561,7 +569,7 @@ void vpad_poll(long now)
 
 int vpad_live(int slot)
 {
-    return slot >= 0 && slot < HOST_MAX_PADS && g_slot[slot].st == VP_READY;
+    return slot >= 0 && slot < VPAD_SLOTS && g_slot[slot].st == VP_READY;
 }
 
 int vpad_read_rumble(int slot, long now, uint8_t *strong, uint8_t *weak)
@@ -657,7 +665,7 @@ static void send_frame(int slot, const pad_state *st)
 void vpad_update(int slot, const pad_state *st)
 {
     if (!vpad_live(slot)) {
-        if (slot >= 0 && slot < HOST_MAX_PADS) g_slot[slot].diag_dropped++;
+        if (slot >= 0 && slot < VPAD_SLOTS) g_slot[slot].diag_dropped++;
         return;
     }
     g_slot[slot].last = *st;
@@ -681,7 +689,7 @@ static void ps_tick(long now)
 {
     int i;
 
-    for (i = 0; i < HOST_MAX_PADS; i++) {
+    for (i = 0; i < VPAD_SLOTS; i++) {
         vslot *v = &g_slot[i];
         if (!v->ps_active || v->st != VP_READY) continue;
         if (v->ps_until && now >= v->ps_until) v->ps_until = 0;       /* released */
@@ -695,7 +703,7 @@ void vpad_remove(int slot)
 {
     vslot *v;
 
-    if (slot < 0 || slot >= HOST_MAX_PADS) return;
+    if (slot < 0 || slot >= VPAD_SLOTS) return;
     v = &g_slot[slot];
     switch (v->st) {
     case VP_READY:
@@ -710,6 +718,77 @@ void vpad_remove(int slot)
         memset(v, 0, sizeof *v);
         break;
     }
+}
+
+/* Dedicated diagnostic slot: no Bluetooth address, parser or host callbacks. */
+int vpad_test_status(void)
+{
+    int st = g_slot[TEST_SLOT].st;
+    if (st == VP_FREE) return 0;
+    if (!g_test_enabled && st == VP_PENDING) return 4;
+    if (st == VP_FAILED) return 3;
+    return st == VP_READY ? 2 : 1;
+}
+
+int vpad_test_enable(int enabled)
+{
+    vslot *v = &g_slot[TEST_SLOT];
+    if (enabled) {
+        if (g_test_enabled) return v->st != VP_FAILED;
+        if (v->st != VP_FREE || !vpad_add(TEST_SLOT)) return 0;
+        memset(&v->last, 0, sizeof v->last);
+        v->last.lx = v->last.ly = v->last.rx = v->last.ry = 128;
+        g_test_enabled = 1;
+        g_test_buttons = 0;
+        g_test_until = g_test_at = 0;
+        log_line("test pad: enabled; dedicated slot=%d, no Bluetooth input", TEST_SLOT);
+    } else {
+        g_test_enabled = 0;
+        g_test_buttons = 0;
+        g_test_until = 0;
+        if (v->st == VP_READY || (v->st == VP_FAILED && v->dev)) {
+            if (v->st == VP_READY) {
+                v->last.buttons = 0;
+                v->ps_until = v->ps_active = 0;
+                send_frame(TEST_SLOT, &v->last);
+            }
+            int32_t r = scePadVirtualDeviceDeleteDevice(v->handle);
+            log_line("test pad: delete dev=%#llx result=%#x", (unsigned long long)v->dev, (unsigned)r);
+            if (r != 0) { v->st = VP_FAILED; return 0; }
+            memset(v, 0, sizeof *v);
+        } else {
+            vpad_remove(TEST_SLOT);
+        }
+        log_line("test pad: disabled");
+    }
+    return 1;
+}
+
+int vpad_test_press(uint32_t button)
+{
+    const uint32_t allowed = PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT |
+        PAD_CROSS | PAD_CIRCLE | PAD_SQUARE | PAD_TRIANGLE | PAD_OPTIONS | PAD_PS;
+    if (!g_test_enabled || !vpad_live(TEST_SLOT) || !button ||
+        (button & ~allowed) || (button & (button - 1))) return 0;
+    g_test_buttons = button;
+    g_test_until = now_ms() + (button == PAD_PS ? 700 : 250);
+    g_test_at = 0;
+    log_line("test pad: press buttons=%08x duration_ms=%d", (unsigned)button, button == PAD_PS ? 700 : 250);
+    test_tick(now_ms());
+    return 1;
+}
+
+static void test_tick(long now)
+{
+    if (!g_test_enabled || !vpad_live(TEST_SLOT) || now - g_test_at < 16) return;
+    g_test_at = now;
+    if (g_test_until && now >= g_test_until) {
+        g_test_until = 0;
+        g_test_buttons = 0;
+        log_line("test pad: released");
+    }
+    g_slot[TEST_SLOT].last.buttons = g_test_buttons;
+    send_frame(TEST_SLOT, &g_slot[TEST_SLOT].last);
 }
 
 static int32_t g_phys_err;

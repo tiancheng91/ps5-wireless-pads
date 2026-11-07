@@ -253,6 +253,26 @@ footer p { margin: 0 24px 0 0; color: var(--mute); font-size: 13px; max-width: 6
   <div class="list" id="paired"></div>
   <button class="btn small cut" id="forgetAll" data-i18n="forgetAll">Clear all PadBridge pairings</button>
 
+  <details id="testPadBox">
+    <summary data-i18n="testTitle">Test virtual controller (no Bluetooth)</summary>
+    <p class="note" data-i18n="testNote">Default off. Enable to create a virtual controller, then send short button presses. Close the game and turn off other controllers before testing.</p>
+    <p id="testPadStatus"></p>
+    <button class="btn" id="testPadOn" data-i18n="testOn">Enable</button>
+    <button class="btn cut" id="testPadOff" data-i18n="testOff">Disable and remove</button>
+    <div id="testPadButtons">
+      <button class="btn small" data-test-button="up">↑</button>
+      <button class="btn small" data-test-button="down">↓</button>
+      <button class="btn small" data-test-button="left">←</button>
+      <button class="btn small" data-test-button="right">→</button>
+      <button class="btn small" data-test-button="cross">×</button>
+      <button class="btn small" data-test-button="circle">○</button>
+      <button class="btn small" data-test-button="square">□</button>
+      <button class="btn small" data-test-button="triangle">△</button>
+      <button class="btn small" data-test-button="options">Options</button>
+      <button class="btn small" data-test-button="ps">PS</button>
+    </div>
+  </details>
+
   <details id="logBox">
     <summary><span data-i18n="log">Log</span><span class="sh s" data-i18n="show">Show</span><span class="sh h" data-i18n="hide">Hide</span></summary>
     <div class="logbox">
@@ -300,6 +320,8 @@ I18N.en.forgetAll = "Clear all PadBridge pairings";
 I18N.en.clearConfirm = "Disconnect all PadBridge controllers and clear their saved pairings? PS5 system pairings are unchanged.";
 I18N.zh.forgetAll = "清空 PadBridge 全部配对";
 I18N.zh.clearConfirm = "断开 PadBridge 手柄并清空全部已保存配对？不会清除 PS5 系统配对。";
+Object.assign(I18N.en, {testTitle:"Test virtual controller (no Bluetooth)", testNote:"Default off. Enable to register a controller. Buttons release automatically after 250 ms (PS: 700 ms). For an isolated test, close the game and turn off other controllers, then launch the game using these buttons.", testOn:"Enable test controller", testOff:"Disable and remove", testState0:"Off", testState1:"Creating…", testState2:"Ready", testState3:"Failed — see log; disable to clean up", testState4:"Removing…", testSent:"Button sent"});
+Object.assign(I18N.zh, {testTitle:"测试虚拟手柄（不经过蓝牙）", testNote:"默认关闭。开启后注册手柄，按键 250 毫秒后自动释放（PS 为 700 毫秒）。独立测试时请先关闭游戏、关掉其他手柄，再用这里的按键启动游戏。", testOn:"开启测试手柄", testOff:"关闭并移除", testState0:"已关闭", testState1:"正在创建…", testState2:"已就绪", testState3:"失败，请查看日志并关闭清理", testState4:"正在移除…", testSent:"按键已发送"});
 function t(k, v) {
   var s = (I18N[LANG] || I18N.en)[k];
   if (s == null) s = I18N.en[k];
@@ -625,6 +647,11 @@ function renderPaired(list, pads) {
 
 function render(s) {
   if (!s) return;
+  var ts = s.testPad || 0;
+  $("testPadStatus").textContent = t("testState" + ts);
+  $("testPadOn").disabled = ts !== 0;
+  $("testPadOff").disabled = ts === 0;
+  document.querySelectorAll("[data-test-button]").forEach(function (b) { b.disabled = ts !== 2; });
   var bt = s.bluetooth, live = $("live");
   $("ver").textContent = "v" + s.version;
   live.className = "live " + (bt === "ok" ? "ok" : bt === "failed" ? "bad" : "wait");
@@ -674,6 +701,12 @@ function loadLog() {
 $("forgetAll").onclick = function () {
   if (window.confirm(t("clearConfirm"))) act("/api/forget-all", t("forgotten"));
 };
+$("testPadOn").onclick = function () { act("/api/test-pad/on", t("testState1")); };
+$("testPadOff").onclick = function () { act("/api/test-pad/off", t("testState0")); };
+document.querySelectorAll("[data-test-button]").forEach(function (b) {
+  b.disabled = true;
+  b.onclick = function () { act("/api/test-pad/press?button=" + b.getAttribute("data-test-button"), t("testSent")); };
+});
 $("pair").onclick = function () { act("/api/pair", t("pairStarted")); };
 $("retry").onclick = function () { act("/api/retry", t("retrying")); };
 $("logRefresh").onclick = loadLog;

@@ -311,6 +311,7 @@ static void web_open(long now)
  * is not known, so everything is closed now and opened afresh on waking. */
 static void rest_suspend(void)
 {
+    vpad_test_enable(0);
     log_line("rest mode: suspending (pads, Bluetooth, menu)");
     notify("%s", tr(MSG_REST_MODE));
     host_close(g_host);                 /* our links; removes our virtual pads; closes the chip */
@@ -391,6 +392,9 @@ int main(void)
     g_wc.log_path = LOG_PATH;
     g_wc.version = PADBRIDGE_VERSION;
     g_wc.press_ps = web_press_ps;
+    g_wc.test_status = vpad_test_status;
+    g_wc.test_enable = vpad_test_enable;
+    g_wc.test_press = vpad_test_press;
     web_open(now_ms());
 
     sysinfo_log();
@@ -470,6 +474,7 @@ int main(void)
     else if (g_stop && strcmp(why, "stop requested") == 0) why = "stop requested (flag or signal)";
 
     log_line("stopping: %s", why);
+    vpad_test_enable(0);
     web_stop(g_web);
     host_close(g_host);                 /* our links; removes our virtual pads */
     g_host = NULL;

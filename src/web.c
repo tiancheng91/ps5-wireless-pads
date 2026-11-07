@@ -200,7 +200,7 @@ static void api_state(web_t *w, int fd)
                 PUT("%s\"%s\"", fb ? "" : ",", names[b].name);
                 fb = 0;
             }
-        PUT("]},\"pads\":[");
+        PUT("]},\"testPad\":%d,\"pads\":[", w->cfg.test_status ? w->cfg.test_status() : 0);
     }
     for (i = 0; h && i < HOST_MAX_PADS; i++) {
         pad_info info;
@@ -296,6 +296,24 @@ static void handle(web_t *w, int fd, char *req)
         api_state(w, fd);
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/log") == 0) {
         api_log(w, fd);
+    } else if (strcmp(method, "POST") == 0 &&
+               (strcmp(path, "/api/test-pad/on") == 0 || strcmp(path, "/api/test-pad/off") == 0)) {
+        int ok = w->cfg.test_enable && w->cfg.test_enable(strcmp(path, "/api/test-pad/on") == 0);
+        respond_text(fd, ok ? 200 : 409, ok ? "{\"ok\":true}" : "{\"error\":\"test pad unavailable\"}");
+    } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/test-pad/press?button=", 27) == 0) {
+        static const struct { const char *name; uint32_t bit; } buttons[] = {
+            {"up", PAD_UP}, {"down", PAD_DOWN}, {"left", PAD_LEFT}, {"right", PAD_RIGHT},
+            {"cross", PAD_CROSS}, {"circle", PAD_CIRCLE}, {"square", PAD_SQUARE},
+            {"triangle", PAD_TRIANGLE}, {"options", PAD_OPTIONS}, {"ps", PAD_PS}
+        };
+        uint32_t bit = 0;
+        for (size_t i = 0; i < sizeof buttons / sizeof buttons[0]; i++)
+            if (strcmp(path + 27, buttons[i].name) == 0) bit = buttons[i].bit;
+        if (!bit) respond_text(fd, 400, "{\"error\":\"button\"}");
+        else {
+            int ok = w->cfg.test_press && w->cfg.test_press(bit);
+            respond_text(fd, ok ? 200 : 409, ok ? "{\"ok\":true}" : "{\"error\":\"test pad not ready\"}");
+        }
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/pair") == 0 && h) {
         if (!host_pair(h, 60)) {
             respond_text(fd, 409, "{\"error\":\"disconnecting\"}");

@@ -64,4 +64,10 @@ void notify(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
  * or a hexadecimal user id. -1 if nobody is signed in. */
 int32_t vpad_choose_user(const int32_t login[4], int32_t init, int32_t fore, const char *want);
 
+
+/* Test status: 0 off, 1 creating, 2 ready, 3 failed, 4 stopping. */
+int vpad_test_status(void);
+int vpad_test_enable(int enabled);
+int vpad_test_press(uint32_t button);
+
 #endif

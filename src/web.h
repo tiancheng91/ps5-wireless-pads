@@ -33,6 +33,9 @@ typedef struct {
     int (*physical)(uint32_t *buttons, int *err);
     /* Presses PS on pad `slot` (0-based). Returns 1 if done. NULL: not available. */
     int (*press_ps)(int slot);
+    int (*test_status)(void);
+    int (*test_enable)(int enabled);
+    int (*test_press)(uint32_t button);
 } web_cfg;
 
 /* Listens on `port` on every interface. Returns NULL if it cannot. */

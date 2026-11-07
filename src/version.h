@@ -7,7 +7,7 @@
 
 /* One #define line only: ps5.mk reads the version from it. */
 #ifndef PADBRIDGE_VERSION
-#define PADBRIDGE_VERSION "0.2.0-beta-routing-diag1"
+#define PADBRIDGE_VERSION "0.2.0-beta-routing-diag2"
 #endif
 
 #endif

@@ -94,6 +94,11 @@ static int get_with(const char *head, char *out, int max)
     return request(head, strlen(head), out, max);
 }
 
+static int test_state, test_presses;
+static int fake_test_status(void) { return test_state; }
+static int fake_test_enable(int on) { test_state = on ? 2 : 0; return 1; }
+static int fake_test_press(uint32_t b) { if (test_state != 2 || b != PAD_CROSS) return 0; test_presses++; return 1; }
+
 int main(void)
 {
     static const unsigned char addr[6] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 };
@@ -134,6 +139,9 @@ int main(void)
     wc.lang_path = "build/test_web_language";
     wc.physical = fake_physical;
     wc.press_ps = fake_press_ps;
+    wc.test_status = fake_test_status;
+    wc.test_enable = fake_test_enable;
+    wc.test_press = fake_test_press;
     g_web = web_start(&wc, PORT);
     CHECK(g_host && g_web);
     if (!g_host || !g_web) return 1;
@@ -141,6 +149,24 @@ int main(void)
         FILE *f = fopen("build/test_web.log", "w");
         if (f) { fputs("line one\nline two\n", f); fclose(f); }
     }
+
+    get("POST", "/api/test-pad/press?button=cross", out, sizeof out);
+    CHECK(strncmp(out, "HTTP/1.1 409", 12) == 0);
+    get_with("POST /api/test-pad/on HTTP/1.1\r\nHost: 10.0.0.1\r\n\r\n", out, sizeof out);
+    CHECK(strncmp(out, "HTTP/1.1 403", 12) == 0 && test_state == 0);
+    host_t *saved_test_host = g_host;
+    g_host = NULL; /* Entire test path works without Bluetooth. */
+    get("POST", "/api/test-pad/on", out, sizeof out);
+    CHECK(test_state == 2);
+    get("GET", "/api/state", out, sizeof out);
+    CHECK(strstr(out, "\"testPad\":2") != NULL);
+    get("POST", "/api/test-pad/press?button=cross", out, sizeof out);
+    CHECK(test_presses == 1);
+    get("POST", "/api/test-pad/press?button=invalid", out, sizeof out);
+    CHECK(strncmp(out, "HTTP/1.1 400", 12) == 0 && test_presses == 1);
+    get("POST", "/api/test-pad/off", out, sizeof out);
+    CHECK(test_state == 0);
+    g_host = saved_test_host;
 
     printf("the page\n");
     get("GET", "/", out, sizeof out);

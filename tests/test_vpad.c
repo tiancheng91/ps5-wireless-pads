@@ -103,7 +103,8 @@ int32_t scePadVirtualDeviceAddDevice(void *p, int32_t t)
     if (g_klog_write >= 0) CHECK(write(g_klog_write, line, (size_t)n) == n);
     return 0;
 }
-int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; (void)d; g_insert_calls++; return 0; }
+static unsigned char g_last_input[8];
+int32_t scePadVirtualDeviceInsertData(int32_t h, const void *d) { (void)h; memcpy(g_last_input, d, sizeof g_last_input); g_insert_calls++; return 0; }
 int32_t scePadVirtualDeviceDeleteDevice(int32_t h) { (void)h; return 0; }
 uint64_t kernel_get_ucred_authid(pid_t pid) { (void)pid; return g_authid; }
 int32_t kernel_set_ucred_authid(pid_t pid, uint64_t a) { (void)pid; g_authid = a; return 0; }
@@ -200,6 +201,33 @@ static void test_feedback(void)
     CHECK(!vpad_read_rumble(0, g_now, &strong, &weak) && g_remote_calls == before);
     CHECK(vpad_live(0));
     vpad_remove(0);
+    CHECK(vpad_test_status() == 0);
+    CHECK(!vpad_test_press(PAD_CROSS));
+    CHECK(vpad_test_enable(1));
+    CHECK(vpad_test_status() == 1);
+    vpad_poll(g_now);
+    g_now++; vpad_poll(g_now);
+    g_now += 301; vpad_poll(g_now);
+    CHECK(vpad_test_status() == 2);
+    CHECK(!vpad_test_press(PAD_CROSS | PAD_CIRCLE));
+    CHECK(vpad_test_press(PAD_CROSS));
+    uint32_t buttons;
+    memcpy(&buttons, g_last_input, 4);
+    CHECK(buttons == PAD_CROSS);
+    CHECK(g_last_input[4] == 128 && g_last_input[5] == 128);
+    g_now += 251; vpad_poll(g_now);
+    memcpy(&buttons, g_last_input, 4);
+    CHECK(buttons == 0); /* Releases even without another HTTP request. */
+    CHECK(vpad_test_press(PAD_PS));
+    CHECK(vpad_test_enable(0) && vpad_test_status() == 0);
+    CHECK(!vpad_test_press(PAD_PS));
+    /* Disable while identification is pending: delete once identified. */
+    CHECK(vpad_test_enable(1));
+    vpad_poll(g_now);
+    CHECK(vpad_test_enable(0) && vpad_test_status() == 4);
+    g_now++; vpad_poll(g_now);
+    g_now += 301; vpad_poll(g_now);
+    CHECK(vpad_test_status() == 0);
     close(fds[0]); close(fds[1]);
     g_klog_read = g_klog_write = -1;
 }
