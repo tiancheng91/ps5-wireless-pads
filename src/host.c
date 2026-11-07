@@ -128,7 +128,7 @@ db_rec *db_find(host_t *h, const unsigned char *addr)
 /* The store file: a magic string, then one fixed-size record per pad:
  *   addr 6, key 16, key type 1, vid 2, pid 2, le 1, addr type 1, ediv 2,
  *   rand 8, irk 16, has irk 1, padding */
-void db_save(host_t *h)
+int db_save(host_t *h)
 {
     char tmp[300];
     FILE *f;
@@ -140,7 +140,7 @@ void db_save(host_t *h)
     f = fopen(tmp, "wb");
     if (!f) {
         log_line("store: cannot write %s: errno %d", tmp, errno);
-        return;
+        return 0;
     }
     fwrite(DB_MAGIC, 1, 8, f);
     for (i = 0; i < h->ndb; i++) {
@@ -166,7 +166,9 @@ void db_save(host_t *h)
     if (!ok || rename(tmp, h->db_path) != 0) {
         log_line("store: could not save %s: errno %d", h->db_path, errno);
         remove(tmp);
+        return 0;
     }
+    return 1;
 }
 
 static void db_load(host_t *h)
@@ -301,7 +303,13 @@ static int sig_send(host_t *h, link_t *l, unsigned char code, unsigned char id,
     p[1] = id;
     put16(p + 2, (unsigned)len);
     if (len) memcpy(p + 4, d, (size_t)len);
-    return l2_send(h, l, CID_SIGNALING, p, 4 + len);
+    int sent = l2_send(h, l, CID_SIGNALING, p, 4 + len);
+    if (l->diag_signals < 32) {
+        l->diag_signals++;
+        log_line("pad %s: signaling tx code=%#x id=%u len=%d sent=%d",
+                 addr_str(l->addr), code, id, len, sent);
+    }
+    return sent;
 }
 
 static unsigned char next_sig_id(host_t *h)
@@ -413,6 +421,14 @@ static void on_signaling(host_t *h, link_t *l, const unsigned char *d, int len)
         chan *ch;
 
         if (4 + clen > len) break;
+        if (l->diag_signal_rx < 32) {
+            l->diag_signal_rx++;
+            log_line("pad %s: signaling rx code=%#x id=%u len=%d dcid=%#x scid=%#x result=%#x",
+                     addr_str(l->addr), code, id, clen,
+                     code == SIG_CONN_RSP && clen >= 8 ? le16(c) : 0,
+                     code == SIG_CONN_RSP && clen >= 8 ? le16(c + 2) : 0,
+                     code == SIG_CONN_RSP && clen >= 8 ? le16(c + 4) : 0);
+        }
 
         switch (code) {
         case SIG_CONN_REQ:      /* psm, source cid */
@@ -936,7 +952,7 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
     int pb, dlen;
     link_t *l;
 
-    if (len < 4) return;
+    if (len < 4 || h->clearing) return;
     hdr = le16(pkt);
     pb = (int)(hdr >> 12) & 3;
     dlen = (int)le16(pkt + 2);
@@ -947,6 +963,11 @@ static void on_acl(host_t *h, const unsigned char *pkt, int len)
             log_line("ACL ignored: unknown handle=%#x pb=%d declared=%d len=%d", hdr & 0xfff, pb, dlen, len);
         }
         return;
+    }
+    if (!l->ready && l->diag_setup_acl < 12) {
+        l->diag_setup_acl++;
+        log_line("pad %s: setup ACL handle=%#x pb=%d declared=%d received=%d",
+                 addr_str(l->addr), hdr & 0xfff, pb, dlen, len);
     }
     if (l->ready) {
         l->diag_acl++;
@@ -1128,6 +1149,10 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
 
     case 0x06:  /* Authentication Complete: status, handle */
         if (len < 5 || !(l = link_by_handle(h, le16(ev + 3)))) break;
+        if (l->diag_security < 16) {
+            l->diag_security++;
+            log_line("pad %s: authentication complete status=%#x", addr_str(l->addr), ev[2]);
+        }
         if (ev[2] == 0) {
             l->auth_ok = 1;
             l->t_auth_ok = now_ms();
@@ -1143,6 +1168,10 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         if (l->le) {
             le_on_encryption(h, l, ev[2], ev[5]);
             break;
+        }
+        if (l->diag_security < 16) {
+            l->diag_security++;
+            log_line("pad %s: encryption change status=%#x enabled=%u", addr_str(l->addr), ev[2], ev[5]);
         }
         if (ev[2] == 0 && ev[5]) {
             l->enc_on = 1;
@@ -1231,6 +1260,7 @@ static void on_event(host_t *h, const unsigned char *ev, int len)
         break;
 
     case 0x18:  /* Link Key Notification: addr, key, type */
+        if (h->clearing) break;
         if (len < 25 || !(l = link_by_addr(h, ev + 2))) break;
         {
             db_rec *r = db_put(h, ev + 2);
@@ -1278,7 +1308,11 @@ static void link_step(host_t *h, link_t *l, long now)
         return;
     }
     if (l->disconnecting) return;
+    if (h->clearing) { link_disconnect(h, l, "pairings cleared"); return; }
     if (!l->ready && now - l->t_conn > T_SETUP_TIMEOUT) {
+        log_line("pad %s: setup timeout auth=%d/%d enc=%d/%d sdp=%d ctrl=%d intr=%d",
+                 addr_str(l->addr), l->auth_sent, l->auth_ok, l->enc_sent, l->enc_on,
+                 l->sdp_query, l->ctrl.st, l->intr.st);
         link_disconnect(h, l, "setup did not finish");
         return;
     }
@@ -1287,7 +1321,11 @@ static void link_step(host_t *h, link_t *l, long now)
     if (!l->auth_ok) {
         if (!l->auth_sent && now - l->t_conn >= (l->pairing ? 0 : T_SELF_AUTH)) {
             put16(p, l->handle);
-            send_cmd(h, OP_AUTH_REQUESTED, p, 2);
+            int sent = send_cmd(h, OP_AUTH_REQUESTED, p, 2);
+            if (l->diag_security < 16) {
+                l->diag_security++;
+                log_line("pad %s: authentication request handle=%#x sent=%d", addr_str(l->addr), l->handle, sent);
+            }
             l->auth_sent = 1;
         }
         return;
@@ -1296,7 +1334,11 @@ static void link_step(host_t *h, link_t *l, long now)
         if (!l->enc_sent && now - l->t_auth_ok >= (l->pairing ? 0 : T_SELF_ENCRYPT)) {
             put16(p, l->handle);
             p[2] = 1;
-            send_cmd(h, OP_SET_ENCRYPTION, p, 3);
+            int sent = send_cmd(h, OP_SET_ENCRYPTION, p, 3);
+            if (l->diag_security < 16) {
+                l->diag_security++;
+                log_line("pad %s: encryption request handle=%#x sent=%d", addr_str(l->addr), l->handle, sent);
+            }
             l->enc_sent = 1;
         }
         return;
@@ -1452,6 +1494,14 @@ void host_poll(host_t *h, int timeout_ms)
 
 int host_pair(host_t *h, int seconds)
 {
+    if (h->clearing) {
+        for (int i = 0; i < HOST_MAX_PADS; i++)
+            if (h->links[i].used) {
+                log_line("pairing: waiting for cleared links to disconnect");
+                return 0;
+            }
+        h->clearing = 0;
+    }
     h->pair_until = now_ms() + (long)seconds * 1000;
     log_line("pairing: searching for %d s", seconds);
     return 1;
@@ -1598,9 +1648,32 @@ int host_forget(host_t *h, const unsigned char addr[6])
         if (l->used && memcmp(link_identity(l), addr, 6) == 0)
             link_disconnect(h, l, "forgotten from the web page");
     }
-    db_forget(h, addr);
+    while (db_find(h, addr)) db_forget(h, addr);
     log_line("pad %s: forgotten", addr_str(addr));
     return 1;
+}
+
+/* Clear only PadBridge's store; never reset the shared Bluetooth controller. */
+int host_forget_all(host_t *h)
+{
+    int count = h->ndb;
+    h->pair_until = 0;
+    h->clearing = 1; /* Late pairing replies must not restore deleted keys. */
+    if (h->inquiring) send_cmd(h, OP_INQUIRY_CANCEL, NULL, 0);
+    h->inquiring = 0;
+    for (int i = 0; i < HOST_MAX_PADS; i++) {
+        link_t *l = &h->links[i];
+        if (!l->used) continue;
+        if (!l->le && !l->connected) {
+            send_cmd(h, 0x0408, l->addr, 6); /* Create Connection Cancel */
+            continue; /* Retain until completion/timeout so a late link is closed. */
+        }
+        link_disconnect(h, l, "all PadBridge pairings cleared");
+    }
+    h->ndb = 0;
+    int ok = db_save(h);
+    log_line("store: clear all records=%d saved=%d; pairing stopped", count, ok);
+    return ok;
 }
 
 /* ---- controller setup ----------------------------------------------------- */

@@ -712,8 +712,49 @@ static void test_input_diagnostics(void)
     unlink("build/test-input-diag.log");
 }
 
+static void test_clear_pairings(void)
+{
+    sim_pad pad = {0};
+    sim_t *sim = sim_new(&pad);
+    host_t h = {0};
+    unsigned char addr[6] = {1, 2, 3, 4, 5, 6};
+    h.hci = sim_hci(sim);
+    h.last_rx = now_ms();
+    snprintf(h.db_path, sizeof h.db_path, "build/test-clear.db");
+    /* Newer builds can persist two transports with exactly the same address. */
+    h.ndb = 2;
+    memcpy(h.db[0].addr, addr, 6);
+    memcpy(h.db[1].addr, addr, 6);
+    h.db[1].le = 1;
+    CHECK(db_save(&h));
+    CHECK(host_forget(&h, addr) && h.ndb == 0);
+    h.ndb = 2;
+    h.pair_until = now_ms() + 60000;
+    link_t *l = link_new(&h, addr);
+    l->connected = 1; l->handle = 2;
+    CHECK(host_forget_all(&h));
+    CHECK(h.ndb == 0 && h.clearing && h.pair_until == 0 && l->disconnecting);
+    CHECK(!host_pair(&h, 60));
+    /* A late key notification cannot repopulate the cleared store. */
+    unsigned char key_event[23] = {0};
+    memcpy(key_event, addr, 6);
+    sim_inject_event(sim, 0x18, key_event, sizeof key_event);
+    host_poll(&h, 0);
+    CHECK(h.ndb == 0);
+    FILE *f = fopen(h.db_path, "rb");
+    CHECK(f != NULL);
+    if (f) { fseek(f, 0, SEEK_END); CHECK(ftell(f) == 8); fclose(f); }
+    memset(h.links, 0, sizeof h.links);
+    CHECK(host_pair(&h, 60) && !h.clearing);
+    snprintf(h.db_path, sizeof h.db_path, "build/missing-clear-dir/store.db");
+    CHECK(!host_forget_all(&h)); /* Never report a failed disk write as success. */
+    unlink("build/test-clear.db");
+    sim_free(sim);
+}
+
 int main(void)
 {
+    test_clear_pairings();
     test_input_diagnostics();
     test_sdp_parse();
     test_pairing(0);

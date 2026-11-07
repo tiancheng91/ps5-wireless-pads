@@ -113,6 +113,10 @@ typedef struct {
     long feedback_at;
     int feedback_failed;
     int feedback_seen;
+    uint64_t diag_frames, diag_dropped;
+    uint32_t diag_buttons;
+    unsigned diag_changes;
+    long diag_at;
 } vslot;
 
 static mbus_bind_fn g_bind;
@@ -121,6 +125,7 @@ static int g_ready;                         /* vpad_init succeeded */
 static int32_t g_user = -1;
 static vslot g_slot[HOST_MAX_PADS];
 static void ps_tick(long now);
+static long g_monitor_until, g_users_at;
 
 /* The identification under way: one at a time, so a DEVICE_ADDED line can
  * only belong to the device just asked for. */
@@ -243,7 +248,11 @@ static void log_source_read(void)
             }
             g_line[g_line_len] = '\0';
             g_line_len = 0;
-            if (g_log_is_dev) log_line("klog: %s", g_line);  /* kept, not lost */
+            if (g_log_is_dev || strstr(g_line, "MBUS") || strstr(g_line, "Mbus") ||
+                strstr(g_line, "LoginMgr") || strstr(g_line, "LOGIN MGR") ||
+                strstr(g_line, "Device") || strstr(g_line, "device") ||
+                strstr(g_line, "User") || strstr(g_line, "user"))
+                log_line("klog: %s", g_line);  /* kept, not lost */
             dev = virtual_device_in(g_line);
             if (!dev || g_pending < 0) continue;
             if (g_matches == 0) {
@@ -457,7 +466,7 @@ static void start_identification(int slot)
         g_slot[slot].st = VP_FAILED;
         return;
     }
-    g_log_fd = log_source_open();
+    if (g_log_fd < 0) g_log_fd = log_source_open();
     if (g_log_fd < 0) {
         g_slot[slot].st = VP_FAILED;
         return;
@@ -490,7 +499,10 @@ static void finish_identification(long now)
     if (g_matches == 1 && now - g_t_match < T_AMBIGUITY && now - g_t_add < T_IDENTIFY) return;
 
     g_pending = -1;
-    log_source_close();
+    /* Bound both log consumption and disk use. Do not change ownership based on logs. */
+    g_monitor_until = now + (g_log_is_dev ? 120000 : 600000);
+    log_line("vpad: observing device/user events for %ld ms via %s",
+             g_monitor_until - now, g_log_is_dev ? "/dev/klog" : "log server");
     if (g_matches != 1) {
         /* Unknown or ambiguous: nothing is bound, inserted into or deleted. */
         log_line("slot %d: virtual pad not identified (%d candidates), left alone", slot, g_matches);
@@ -523,6 +535,18 @@ void vpad_poll(long now)
 
     if (!g_ready) return;
     ps_tick(now);
+    if (g_pending < 0 && g_log_fd >= 0) {
+        if (now < g_monitor_until) {
+            log_source_read();
+            if (now - g_users_at >= 5000) {
+                g_users_at = now;
+                (void)main_user(); /* Observe only; never rebind a device here. */
+            }
+        } else {
+            log_source_close();
+            log_line("vpad: device/user observation ended");
+        }
+    }
     if (g_pending >= 0) {
         log_source_read();
         finish_identification(now);
@@ -610,7 +634,20 @@ static void send_frame(int slot, const pad_state *st)
     clock_gettime(CLOCK_MONOTONIC, &ts);
     d.timestamp = (uint64_t)ts.tv_sec * 1000000u + (uint64_t)ts.tv_nsec / 1000u;
 
-    if (scePadVirtualDeviceInsertData(g_slot[slot].handle, &d) != 0) {
+    vslot *v = &g_slot[slot];
+    int32_t result = scePadVirtualDeviceInsertData(v->handle, &d);
+    v->diag_frames++;
+    if ((v->diag_changes < 24 && (v->diag_frames == 1 || v->diag_buttons != d.buttons)) ||
+        now_ms() - v->diag_at >= 10000 || result != 0) {
+        log_line("slot %d: input dev=%#llx handle=%#x frames=%llu pending_drops=%llu buttons=%08x axes=%u,%u,%u,%u result=%#x",
+                 slot, (unsigned long long)v->dev, (unsigned)v->handle,
+                 (unsigned long long)v->diag_frames, (unsigned long long)v->diag_dropped,
+                 (unsigned)d.buttons, d.lx, d.ly, d.rx, d.ry, (unsigned)result);
+        v->diag_at = now_ms();
+        if (v->diag_changes < 24) v->diag_changes++;
+    }
+    v->diag_buttons = d.buttons;
+    if (result != 0) {
         /* Stop feeding a device that refuses: it may not be ours any more. */
         log_line("slot %d: the virtual pad refused input, stopped feeding it", slot);
         g_slot[slot].st = VP_FAILED;
@@ -619,7 +656,10 @@ static void send_frame(int slot, const pad_state *st)
 
 void vpad_update(int slot, const pad_state *st)
 {
-    if (!vpad_live(slot)) return;
+    if (!vpad_live(slot)) {
+        if (slot >= 0 && slot < HOST_MAX_PADS) g_slot[slot].diag_dropped++;
+        return;
+    }
     g_slot[slot].last = *st;
     send_frame(slot, st);
 }

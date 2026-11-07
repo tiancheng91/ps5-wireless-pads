@@ -163,6 +163,9 @@ static const char *slot_name(int slot)
 static void on_connect(void *ud, int slot, const pad_info *info)
 {
     (void)ud;
+    log_line("bridge: slot %d web P%d addr=%02X:%02X:%02X:%02X:%02X:%02X profile=%s vid=%04x pid=%04x",
+             slot, slot + 1, info->addr[5], info->addr[4], info->addr[3], info->addr[2], info->addr[1], info->addr[0],
+             info->profile, info->vid, info->pid);
     if (slot >= 0 && slot < HOST_MAX_PADS)
         snprintf(g_slot_name[slot], sizeof g_slot_name[slot], "%s",
                  pad_display_name(info->vid, info->pid, info->profile));

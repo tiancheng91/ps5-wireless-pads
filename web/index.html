@@ -251,6 +251,7 @@ footer p { margin: 0 24px 0 0; color: var(--mute); font-size: 13px; max-width: 6
 
   <div class="head"><h2 data-i18n="pairedTitle">Paired controllers</h2><span data-i18n="switchOn">Switch one on to connect it</span></div>
   <div class="list" id="paired"></div>
+  <button class="btn small cut" id="forgetAll" data-i18n="forgetAll">Clear all PadBridge pairings</button>
 
   <details id="logBox">
     <summary><span data-i18n="log">Log</span><span class="sh s" data-i18n="show">Show</span><span class="sh h" data-i18n="hide">Hide</span></summary>
@@ -295,6 +296,10 @@ he:{"language":"שפה","langSet":"שפה: {name}","connecting":"מתחבר…",
 };
 var LS_LANG = "padbridge-lang", LANG = "en", langFromConsole = false, lastState = null;
 try { var saved = localStorage.getItem(LS_LANG); if (I18N[saved]) LANG = saved; } catch (e) {}
+I18N.en.forgetAll = "Clear all PadBridge pairings";
+I18N.en.clearConfirm = "Disconnect all PadBridge controllers and clear their saved pairings? PS5 system pairings are unchanged.";
+I18N.zh.forgetAll = "清空 PadBridge 全部配对";
+I18N.zh.clearConfirm = "断开 PadBridge 手柄并清空全部已保存配对？不会清除 PS5 系统配对。";
 function t(k, v) {
   var s = (I18N[LANG] || I18N.en)[k];
   if (s == null) s = I18N.en[k];
@@ -666,6 +671,9 @@ function loadLog() {
   }, function () { $("log").textContent = t("logError"); });
 }
 
+$("forgetAll").onclick = function () {
+  if (window.confirm(t("clearConfirm"))) act("/api/forget-all", t("forgotten"));
+};
 $("pair").onclick = function () { act("/api/pair", t("pairStarted")); };
 $("retry").onclick = function () { act("/api/retry", t("retrying")); };
 $("logRefresh").onclick = loadLog;

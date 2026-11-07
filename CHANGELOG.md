@@ -1,3 +1,12 @@
+## 0.2.0-beta-routing-diag1
+
+Diagnostic build based on aa58146, preserving its pairing and user binding.
+Adds bounded virtual input, device/user event, and Bluetooth setup diagnostics;
+extends the web log tail to 64 KiB. Adds confirmed clearing of all PadBridge
+pairings, including records saved by versions with separate Classic/LE bonds.
+System Bluetooth pairings are not cleared. Direct kernel-log observation lasts
+120 seconds after device identification; a log-server connection lasts 10 minutes.
+
 # Changelog
 
 Every ELF is `dist/PadBridge-PS5-<version>.elf`, with a `.sha256` beside it. The

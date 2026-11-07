@@ -219,6 +219,7 @@ typedef struct {
     long t_init;
     uint64_t diag_rx, diag_parsed;
     uint64_t diag_acl, diag_frames;
+    unsigned char diag_setup_acl, diag_signals, diag_signal_rx, diag_security;
     unsigned char diag_acl_errors, diag_unknown_cid;
     uint32_t diag_buttons;
     unsigned char diag_changes, diag_hid_ignored, diag_init_failures;
@@ -267,6 +268,7 @@ struct host {
     long pair_until;
     long purge_at;                  /* when stale links were last cleared */
     int inquiring;
+    int clearing;
     int dead;               /* the transport is gone */
     int diag_done;          /* the transport's self-report was logged */
     int scan_orig, scan_set; /* page scan as found, and as we set it (-1: untouched) */
@@ -292,7 +294,7 @@ void init_tick(host_t *h, link_t *l, long now);
 
 db_rec *db_find(host_t *h, const unsigned char *addr);
 db_rec *db_put(host_t *h, const unsigned char *addr);
-void db_save(host_t *h);
+int db_save(host_t *h);
 void db_forget(host_t *h, const unsigned char *addr);
 
 /* le.c */

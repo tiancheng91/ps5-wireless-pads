@@ -90,4 +90,7 @@ int  host_pad_get(const host_t *h, int slot, pad_info *info, pad_state *st);
  * Returns 0 if it was not paired. */
 int  host_forget(host_t *h, const unsigned char addr[6]);
 
+/* Stops pairing, disconnects our links, clears all stored transports. */
+int host_forget_all(host_t *h);
+
 #endif

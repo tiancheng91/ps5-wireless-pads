@@ -520,7 +520,7 @@ static void on_advert(host_t *h, const uint8_t *r, int n)
     db_rec *bond;
     int i;
 
-    if (n < 10) return;
+    if (h->clearing || n < 10) return;
     evtype = r[0];
     type = r[1];
     addr = r + 2;

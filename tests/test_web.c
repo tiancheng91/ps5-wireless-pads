@@ -237,6 +237,12 @@ int main(void)
     get("GET", "/api/state", out, sizeof out);
     CHECK(strstr(out, "\"pads\":[]") != NULL && strstr(out, "\"paired\":[]") != NULL);
 
+    get_with("POST /api/forget-all HTTP/1.1\r\nHost: 10.0.0.1\r\n\r\n", out, sizeof out);
+    CHECK(strncmp(out, "HTTP/1.1 403", 12) == 0);
+    get("POST", "/api/forget-all", out, sizeof out);
+    CHECK(strstr(out, "{\"ok\":true}") != NULL);
+    CHECK(host_paired_count(g_host) == 0 && host_pairing_left(g_host) == 0);
+
     printf("bad requests: unknown, garbage, oversized, silent, many at once\n");
     get("GET", "/nothing", out, sizeof out);
     CHECK(strncmp(out, "HTTP/1.1 404", 12) == 0);

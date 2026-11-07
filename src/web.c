@@ -19,7 +19,7 @@
 #define WEB_CLIENTS     8
 #define REQ_MAX         8192
 #define T_REQUEST       3000    /* ms for a client to send its request */
-#define LOG_TAIL        6144
+#define LOG_TAIL        65536
 
 extern const unsigned char web_page_html[];
 extern const unsigned int web_page_html_len;
@@ -243,7 +243,7 @@ static void api_state(web_t *w, int fd)
 /* The end of the log, as plain text with anything unprintable dropped. */
 static void api_log(web_t *w, int fd)
 {
-    char buf[LOG_TAIL];
+    static char buf[LOG_TAIL]; /* Web requests are processed serially. */
     FILE *f = fopen(w->cfg.log_path, "rb");
     size_t n = 0, i;
     long size;
@@ -297,9 +297,15 @@ static void handle(web_t *w, int fd, char *req)
     } else if (strcmp(method, "GET") == 0 && strcmp(path, "/api/log") == 0) {
         api_log(w, fd);
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/pair") == 0 && h) {
-        host_pair(h, 60);
+        if (!host_pair(h, 60)) {
+            respond_text(fd, 409, "{\"error\":\"disconnecting\"}");
+            return;
+        }
         log_line("web: pairing started");
         respond_text(fd, 200, "{\"ok\":true}");
+    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/api/forget-all") == 0 && h) {
+        int ok = host_forget_all(h);
+        respond_text(fd, ok ? 200 : 500, ok ? "{\"ok\":true}" : "{\"error\":\"store write failed\"}");
     } else if (strcmp(method, "POST") == 0 && strncmp(path, "/api/forget?addr=", 17) == 0 && h) {
         unsigned char a[6];
         if (!parse_addr(path + 17, a)) respond_text(fd, 400, "{\"error\":\"address\"}");
