@@ -142,6 +142,13 @@ static const uint8_t *link_id_addr(const link_t *l)
            ? l->le_s.id_addr : l->addr;
 }
 
+/* Our Switch Pro protocol is Classic HID, not HID-over-GATT.
+ * Keep the LE bond/identity solely to recognize and skip later advertisements. */
+static int classic_only(uint16_t vid, uint16_t pid)
+{
+    return vid == 0x057e && pid == 0x2009;
+}
+
 static db_rec *link_db(host_t *h, const link_t *l)
 {
     return db_find(h, link_id_addr(l), 1);
@@ -534,6 +541,7 @@ static void on_advert(host_t *h, const uint8_t *r, int n)
 
     bond = known_pad(h, type, addr);
     if (bond) {
+        if (classic_only(bond->vid, bond->pid)) return;
         for (i = 0; i < HOST_MAX_PADS; i++)
             if (h->links[i].used && h->links[i].le &&
                 memcmp(link_id_addr(&h->links[i]), bond->addr, 6) == 0) return;
@@ -553,7 +561,7 @@ void le_poll(host_t *h, long now)
     if (now < h->pair_until) want = 1;
     for (i = 0; i < h->ndb && !want; i++) {
         int linked = 0;
-        if (!h->db[i].le) continue;
+        if (!h->db[i].le || classic_only(h->db[i].vid, h->db[i].pid)) continue;
         for (j = 0; j < HOST_MAX_PADS; j++)
             if (h->links[j].used && h->links[j].le &&
                 memcmp(link_id_addr(&h->links[j]), h->db[i].addr, 6) == 0) linked = 1;
@@ -1112,7 +1120,8 @@ static void on_att_response(host_t *h, link_t *l, const uint8_t *d, int n)
             }
         }
         l->ids_known = 1;
-        gatt_go(h, l, G_SVC);
+        /* Wait only for bond persistence; le_step will then close this link. */
+        if (!classic_only(l->vid, l->pid)) gatt_go(h, l, G_SVC);
         break;
 
     case G_SVC:
@@ -1405,6 +1414,12 @@ void le_step(host_t *h, link_t *l, long now)
     if (e->smp == SMP_KEYS && now - e->t_smp > T_KEYS) {
         log_line("le pad %s: not every key came, storing what did", addr_str(l->addr));
         bond_save(h, l);
+    }
+
+    if (l->ids_known && classic_only(l->vid, l->pid)) {
+        if (e->bonded || e->smp == SMP_DONE)
+            link_disconnect(h, l, "Switch Pro requires Classic HID; ignoring LE");
+        return;
     }
 
     /* GATT: one request at a time, repeated if its answer went astray. */

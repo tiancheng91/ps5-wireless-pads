@@ -82,6 +82,43 @@ static void xbox_pad(sim_le_pad *p, int sc, int rpa)
     p->mtu = 185;
 }
 
+static void test_switch_classic_only(int rpa)
+{
+    sim_le_pad pad;
+    seen s = {0};
+    host_paired_info info;
+    unlink(DB);
+    xbox_pad(&pad, 0, rpa);
+    pad.vid = 0x057e;
+    pad.pid = 0x2009;
+    sim_le_t *sim = sim_le_new(&pad);
+    host_t *h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (!h) { sim_le_free(sim); return; }
+    host_pair(h, 60);
+    run(h, 10000);
+    CHECK(s.connects == 0 && s.states == 0);
+    CHECK(sim_le_creates(sim) == 1 && sim_le_outputs(sim) == 0);
+    CHECK(host_paired_get(h, 0, &info));
+    CHECK(info.le && info.vid == 0x057e && info.pid == 0x2009 && !info.connected);
+    sim_le_power_off(sim);
+    run(h, 100);
+    sim_le_power_on(sim); /* Includes a new RPA: stored identity must still match. */
+    run(h, 10000);
+    CHECK(sim_le_creates(sim) == 1);
+    host_close(h);
+    h = open_host(sim, &s);
+    CHECK(h != NULL);
+    if (h) {
+        host_pair(h, 60); /* Skip persisted records even during explicit pairing. */
+        run(h, 10000);
+        CHECK(sim_le_creates(sim) == 1 && s.connects == 0);
+        host_close(h);
+    }
+    sim_le_free(sim);
+    unlink(DB);
+}
+
 static void test_xbox_sc(void)
 {
     sim_le_pad pad;
@@ -419,6 +456,8 @@ static void test_stress(void)
 
 int main(void)
 {
+    test_switch_classic_only(0);
+    test_switch_classic_only(1);
     test_xbox_sc();
     test_reconnect_rpa();
     test_generic_legacy();
